@@ -1,14 +1,18 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import scipy
-from scipy.signal import butter, filtfilt, lfilter
+from scipy.signal import butter, filtfilt
 from scipy.ndimage import uniform_filter1d
-from collections import deque
 import os
 import h5py
 import glob
 from tqdm import tqdm
-from datetime import datetime, timezone
+import re
+
+
+def sequence_number(path):
+    filename = os.path.basename(path) #pull filename
+    match = re.search(r'_(\d+)\.h5$', filename)  #looks for a string of the form "_<number>.h5" at the end of the filename
+    return int(match.group(1)) #return the number as an integer
 
 
 def read_dasFile(file_path:str):
@@ -17,7 +21,7 @@ def read_dasFile(file_path:str):
     with h5py.File(file_path) as f:
 
         # keys = list(f.keys()) #list all keys
-        Acquisition = f['Acquisition']  #headers in h5 structure  #TODO: check the last file (this may not be true for all files), or add a safety check to make sure the key exists
+        Acquisition = f['Acquisition']  #headers in h5 structure  #TODO: add a safety check to make sure the key exists
         raw = Acquisition['Raw[0]']
 
         #read through each key and save as a variable to the dictionary
@@ -54,13 +58,6 @@ def plot_timeSeries(data, channel:int):
     plt.close('all')
 
 
-def time2dateTime(time_array):
-
-    #convert array of unix timestamps to datetime objects
-    dateTime_array = [datetime.fromtimestamp(t, tz=timezone.utc) for t in time_array]
-    return dateTime_array
-
-
 class DASProcessor:
 
     # process the raw strain data - the order of operations will be as follows:
@@ -76,9 +73,9 @@ class DASProcessor:
     def __init__(self, gauge_length:float, sampling_frequency:int, temporal_window:int, save_path:str):
         #gauge lenth in meters, sampling frequency in Hz, temporal window in minutes, save path for processed data
 
-        self.gauge_length = gauge_length
-        self.sampling_frequency = sampling_frequency
-        self.temporal_window = temporal_window
+        self.gauge_length = gauge_length # gauge length in meters
+        self.sampling_frequency = sampling_frequency # sampling frequency in Hz
+        self.temporal_window = temporal_window # temporal window in minutes
         self.window_samples = int(temporal_window * 60 * sampling_frequency) #number of samples in the temporal window
 
         self.f = h5py.File(save_path, "w")  # open (create/overwrite) the output HDF5 file for incremental writing
@@ -86,6 +83,9 @@ class DASProcessor:
         self.time_ds = None  # will hold the resizable time dataset once initialized
 
     def process_file(self, rawData, unix_time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2):
+
+        #antialiasing check - make sure the cutoff frequency is less than half the downsample frequency to avoid aliasing
+        # assert cutoff_frequency < 0.5 * downsample_frequency, "Cutoff frequency must be less than half the downsample frequency to avoid aliasing."  #FIXME: uncomment me
 
         # convert unix time to datetime object
         time_seconds = unix_time / 1e6  # unix time stamp is stored in microseconds - convert to seconds
@@ -109,18 +109,18 @@ class DASProcessor:
         time_seconds = time_seconds[start_clip:stop_clip]
 
         #downsample
-        strain_downsampled, time_downsampled = processor.downsample(strain_low_pass_filtered, time_seconds, downsample_frequency=2)
+        strain_downsampled, time_downsampled = self.downsample(strain_low_pass_filtered, time_seconds, downsample_frequency=downsample_frequency)
 
         #write to hdf5 file
-        processor._write(strain_downsampled, time_downsampled)
+        self._write(strain_downsampled, time_downsampled)
 
         # return strain_downsampled, time_downsampled
-
 
     def temporal_detrend(self, rawStrain):
 
         # 1: temporal detrend with a 10-minute moving window (in each isolated channel)
         # - this should remove any low frequency noise (temperature, laser drift, etc.) and leave the wave band
+        # - done within each channel (ex: thermal expansion of a particular segment of the fiber)
 
         baseline = uniform_filter1d(rawStrain, size=self.window_samples, axis=0, mode='nearest')
 
@@ -130,6 +130,7 @@ class DASProcessor:
 
         # 2: common - mode removal (spatial detrend)
         # - detrend across channels - removes DC offsets, biases, temp, lase drift etc... also should leave just the wave band
+        # - done across channels (ex: noise from the laser hits the entire fiber at once - should be relatively uniform across channels)
 
         baseline = np.median(strain_temporal_detrend, axis=1, keepdims=True)
 
@@ -144,7 +145,7 @@ class DASProcessor:
         # print(len(output))
         # b, a = output[0], output[1] #unpack output
 
-        filtered_strain = filtfilt(b, a, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering
+        filtered_strain = filtfilt(b, a, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
 
         return filtered_strain
 
@@ -153,12 +154,13 @@ class DASProcessor:
         # 4: downsample to a chosen frequency
         # finishes decimating the data. DAS has extremely high temporal resolution. Not all of this is needed.
 
-        sampling_interval = int(self.sampling_frequency / downsample_frequency)
-        strain_downsampled = strain_low_passed[::sampling_interval, :]
-        time_downsampled = time[::sampling_interval]
+        assert self.sampling_frequency % downsample_frequency == 0, "sampling_frequency must be an integer multiple of downsample_frequency"
+
+        sampling_interval = int(self.sampling_frequency / downsample_frequency) # calculate the sampling interval for downsampling
+        strain_downsampled = strain_low_passed[::sampling_interval, :] # downsample the strain data by taking every nth sample along the time axis
+        time_downsampled = time[::sampling_interval] # downsample the time data by taking every nth sample along the time axis
 
         return strain_downsampled, time_downsampled
-
 
     def _init_h5(self, n_ch, chunk_size=5000):
         #initialize the HDF5 file with datasets for strain and time
@@ -217,7 +219,7 @@ if __name__ == "__main__":
 
 
     '''all files'''
-    all_files = glob.glob(os.path.join(datafolder, '*.h5'))
+    all_files = sorted(glob.glob(os.path.join(datafolder, '*.h5')), key=sequence_number)
     for i in tqdm(range(1, len(all_files) - 1)):  #start from index one to get current previous and next file
 
         previous_file = read_dasFile(all_files[i - 1])
@@ -250,31 +252,7 @@ if __name__ == "__main__":
     processor.close()
 
 
-    # processed_data_path = './data/processed_614/processed_data.h5'
-    # with h5py.File(processed_data_path, 'r') as f:
-    #     strain = f['strain'][:]  # shape (time, N_channels)
-    #     time = f['time'][:]  # shape (time,)
-    #
-    # normalize_strain = strain / (np.std(strain, axis=0, keepdims=True) + 1e-12)
 
-    # datetime_array = time2dateTime(time)  #FIXME: clip to seconds only for visualizations
-    # channel = 700
-    #
-    # fig, ax = plt.subplots()
-    # channels = np.arange(strain.shape[1])  # create an array of channel indices
-    # # ax.plot(datetime, strain[:, 700])
-    # v = np.nanpercentile(np.abs(strain), 99)
-    # pcm = ax.pcolormesh(datetime_array, channels, strain.T, shading='auto', vmin=-v, vmax=v, cmap='RdBu')
-    # t0 = datetime(2026, 6, 14, 8, 30, 0, tzinfo=timezone.utc)
-    # t1 = datetime(2026, 6, 14, 8, 31, 0, tzinfo=timezone.utc)
-    # ax.set_xlim(t0, t1)
-    # ax.set_ylim(400, 460)
-    # cbar = plt.colorbar(pcm, ax=ax)
-    # cbar.set_label("Strain")
-    #
-    #
-    # plt.savefig('./figures/waterfall.png')
-    # plt.close('all')
 
 
 
@@ -283,6 +261,10 @@ if __name__ == "__main__":
     #TODO: at some point it may be good to output all intermediate products like is done in the TapTest.ipynb
 
     #TODO: Create the option to save the files as 'x' minute sections or One large hdf5 file
+
+    #TODO: create a main function to run all of the above code.
+
+    #TODO: are the chunk sizes when saving the hdf5 actually making it faster?
 
 
 
