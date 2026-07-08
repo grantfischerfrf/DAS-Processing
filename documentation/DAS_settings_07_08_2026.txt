@@ -1,0 +1,9 @@
+FIBER 1
+
+Sample Rate: 10kHz (decimated to 500Hz for saving files)
+Gauge length: 1.6m
+Pulse Width: 1.02m
+Channel Spacing: 1.6m
+Number of Channels: 1592
+
+

@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt
 from scipy.ndimage import uniform_filter1d
+from datetime import datetime, timezone
 import os
 import h5py
 import glob
@@ -13,6 +14,18 @@ def sequence_number(path):
     filename = os.path.basename(path) #pull filename
     match = re.search(r'_(\d+)\.h5$', filename)  #looks for a string of the form "_<number>.h5" at the end of the filename
     return int(match.group(1)) #return the number as an integer
+
+
+def time2dateTime(time_array):
+
+    #convert array of unix timestamps to datetime objects
+    if not isinstance(time_array, np.ndarray):
+        dateTime_array = datetime.fromtimestamp(time_array, tz=timezone.utc)
+
+    else:
+        dateTime_array = np.array([datetime.fromtimestamp(t, tz=timezone.utc) for t in time_array])
+
+    return dateTime_array
 
 
 def read_dasFile(file_path:str):
@@ -78,11 +91,11 @@ class DASProcessor:
         self.temporal_window = temporal_window # temporal window in minutes
         self.window_samples = int(temporal_window * 60 * sampling_frequency) #number of samples in the temporal window
 
-        self.f = h5py.File(save_path, "w")  # open (create/overwrite) the output HDF5 file for incremental writing
-        self.strain_ds = None  # will hold the resizable strain dataset once initialized
-        self.time_ds = None  # will hold the resizable time dataset once initialized
+        self.save_path = save_path  # output directory for saving data
+        self.strain_ds = None  # strain_dataset, will hold the resizable strain dataset once initialized  #FIXME: rename to dataset - ds is confusing
+        self.time_ds = None  # time_dataset, will hold the resizable time dataset once initialized
 
-    def process_file(self, rawData, unix_time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2):
+    def process_file(self, rawData, unix_time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
 
         #antialiasing check - make sure the cutoff frequency is less than half the downsample frequency to avoid aliasing
         # assert cutoff_frequency < 0.5 * downsample_frequency, "Cutoff frequency must be less than half the downsample frequency to avoid aliasing."  #FIXME: uncomment me
@@ -93,10 +106,16 @@ class DASProcessor:
         #run data through processing pipeline
         rawStrain = phase2strain(rawData, self.gauge_length)  # convert phase shifts to strain using hartog, 2017 linear method
 
-        #initialize hdf5 file if not already done
         n_channels = rawStrain.shape[1]
-        if self.strain_ds is None:
+        if multi_save: #if saving multiple small files, initialize a new hdf5 file
+            start_datetime = time2dateTime(time_seconds[start_clip])  # convert the start time to a datetime object
+            self.f = h5py.File(self.save_path + start_datetime.strftime("%Y_%m_%d_%H_%M_%S") + '.h5', "w") # open (create/overwrite) the output HDF5 file for incremental writing
             self._init_h5(n_channels)
+
+        if not multi_save:  #if saving one large file, initialize the hdf5 file only once if it does not already exist
+            if self.strain_ds is None:
+                self.f = h5py.File(self.save_path + 'all_files' + '.h5', "w") # open (create/overwrite) the output HDF5 file for incremental writing
+                self._init_h5(n_channels)
 
         strain_temporal_detrend = self.temporal_detrend(rawStrain)  # temporal detrend with a 10-minute moving window (in each isolated channel)
 
@@ -112,7 +131,7 @@ class DASProcessor:
         strain_downsampled, time_downsampled = self.downsample(strain_low_pass_filtered, time_seconds, downsample_frequency=downsample_frequency)
 
         #write to hdf5 file
-        self._write(strain_downsampled, time_downsampled)
+        self._write(strain_downsampled, time_downsampled, multi_save)
 
         # return strain_downsampled, time_downsampled
 
@@ -177,49 +196,65 @@ class DASProcessor:
             "time", #name of dataset
             shape=(0,), #initial shape - no channels for a time array
             maxshape=(None,), #allow infinite growth
-            dtype=np.float64,
+            dtype=np.float64,  #datatype, can be float64 to store precise timestamps
             chunks=(chunk_size,), #store data in chunks of (chunk_size) time samples to make writing faster
             compression="gzip",  #compress the data to save space
         )
 
-    def _write(self, strain, time):
-        #write data to hdf5 file
-        old = self.strain_ds.shape[0]  #old shape of the dataset - num of time samples already written
-        new = strain.shape[0]  #new shape of the dataset - num of time samples to be written
+    def _write(self, strain, time, multi_save):
+        #write to either one file or save in intervals of 'x' amount of time - name using the first timestamp
+        if multi_save:
+            self.strain_ds.resize(strain.shape[0], axis=0) #resize the dataset to accommodate the new data
+            self.strain_ds[:] = strain.astype(np.float32) #write the new data to the dataset
 
-        self.strain_ds.resize(old + new, axis=0) #resize the dataset to accommodate the new data
-        self.strain_ds[old:] = strain.astype(np.float32) #write the new data to the dataset
+            self.time_ds.resize(time.shape[0], axis=0) #resize the dataset to accommodate the new data
+            self.time_ds[:] = time.astype(np.float64) #write the new data to the dataset
 
-        self.time_ds.resize(old + new, axis=0) #resize the dataset to accommodate the new data
-        self.time_ds[old:] = time.astype(np.float64) #write the new data to the dataset
+            self.close() #close the file after writing to it
+
+        if not multi_save:
+            #write data to one hdf5 file
+            old = self.strain_ds.shape[0]  #old shape of the dataset - num of time samples already written
+            new = strain.shape[0]  #new shape of the dataset - num of time samples to be written
+
+            self.strain_ds.resize(old + new, axis=0) #resize the dataset to accommodate the new data
+            self.strain_ds[old:] = strain.astype(np.float32) #write the new data to the dataset
+
+            self.time_ds.resize(old + new, axis=0) #resize the dataset to accommodate the new data
+            self.time_ds[old:] = time.astype(np.float64) #write the new data to the dataset
 
     def close(self):
-        self.f.close() #close the HDF5 file when done
+        if self.f is not None: # check if the HDF5 file is open
+            self.f.close() # close the HDF5 file
+            self.f = None # set the file handle to None to indicate that the file is closed
 
 
 
 if __name__ == "__main__":
 
-    datafolder = os.getcwd() + '/data/raw_614'
-    savefolder = os.getcwd() + '/data/processed_614'
+    datafolder = os.getcwd() + '/data/raw_66/1400_UTC'
+    savefolder = os.getcwd() + '/data/processed_66/1400_UTC'
 
     #define gauge length and sampling frequency
     gauge_length = 1.6 #meters
     sampling_frequency = 500 #hz
-    #1592 channels?? #TODO: find the channel length in meters?
+    #1592 channels - fiber one
 
+
+    '''all files'''
+    all_files = sorted(glob.glob(os.path.join(datafolder, '*.h5')), key=sequence_number)
+
+    # #get the initial collection time from the first file
+    # initial_collection =
 
     #instantiate the DASProcessor class
     processor = DASProcessor(
         gauge_length=gauge_length,
         sampling_frequency=sampling_frequency,
         temporal_window=10, #minutes - similar to the moving window used in Glover et al., 2024
-        save_path=os.path.join(savefolder, 'processed_data.h5')
+        save_path=os.path.join(savefolder, 'Processed_data_')
     )
 
-
-    '''all files'''
-    all_files = sorted(glob.glob(os.path.join(datafolder, '*.h5')), key=sequence_number)
     for i in tqdm(range(1, len(all_files) - 1)):  #start from index one to get current previous and next file
 
         previous_file = read_dasFile(all_files[i - 1])
@@ -247,7 +282,7 @@ if __name__ == "__main__":
         stop_clip = start_clip + n
 
         #process raw strain data
-        processor.process_file(rawData, time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2)  #TODO: can return the last processed data to plot if wanted in the future.
+        processor.process_file(rawData, time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2, multi_save=False)  #TODO: can return the last processed data to plot if wanted in the future.
 
     processor.close()
 
@@ -259,8 +294,6 @@ if __name__ == "__main__":
 
 
     #TODO: at some point it may be good to output all intermediate products like is done in the TapTest.ipynb
-
-    #TODO: Create the option to save the files as 'x' minute sections or One large hdf5 file
 
     #TODO: create a main function to run all of the above code.
 
