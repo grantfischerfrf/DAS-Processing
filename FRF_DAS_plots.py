@@ -57,12 +57,12 @@ def waterFall(data, time, channel_spacing, starttime:datetime, endtime:datetime,
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
         ax.set_ylabel('Along-Cable Distance (m)')
         ax.set_title('Waterfall Plot' + starttime.strftime('_%Y_%m_%d_%H:%M') + '_to_' + endtime.strftime('%Y_%m_%d_%H:%M'))
-        ax.set_ylim(300, 700)
+        ax.set_ylim(600, 1500)
         ax.tick_params(axis='x', rotation=45)
         cbar = plt.colorbar(pcm, ax=ax)
         cbar.set_label("Strain")
         plt.tight_layout()
-        plt.savefig(savepath + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '_zoomed.png')
+        plt.savefig(savepath + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '_alongshore.png')
         plt.show()
         plt.close('all')
 
@@ -147,17 +147,17 @@ def spectrogram_plot(PSD, frequencies, time, savepath:str, channel:int, dB=False
 if __name__ == "__main__":
 
     #processed data
-    processed_data_path = os.getcwd() + '/data/processed_66/1400_UTC/Processed_data_all_files.h5'
+    processed_data_path = os.getcwd() + '/data/processed_66/1300_UTC/Processed_data_all_files.h5'
     strain, time = load_processedData(processed_data_path) #pull processed strain and time data
 
     datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
 
     #define starttime and endtime for plotting
-    starttime = datetime(2026, 6, 6, 14, 0, 0, tzinfo=timezone.utc)
-    endtime = datetime(2026, 6, 6, 14, 5, 0, tzinfo=timezone.utc)
+    starttime = datetime(2026, 6, 6, 13, 0, 0, tzinfo=timezone.utc)
+    endtime = datetime(2026, 6, 6, 13, 5, 0, tzinfo=timezone.utc)
 
     '''CREATE WATERFALL PLOT'''
-    savepath = './figures/waterfall_UTC1400'
+    savepath = './figures/waterfall_UTC1300'
     channel_start = 0  #define start and end channels for plotting
     channel_end = strain.shape[1]
     channel_spacing=1.6 #meters
@@ -179,6 +179,8 @@ if __name__ == "__main__":
     # )
     #
     # spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
+
+    '''VISUALIZE LARC SURVEY - ORIGINAL DEPLOYMENT DATE 7/30'''
 
 
     #TODO: normalizing the strain by the distance from shore may help with fading in the middle. Not sure if you can do this, decay in strain signal may be related nonlinearly with distance

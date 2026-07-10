@@ -1,0 +1,66 @@
+{
+    "name": "FRF_Fiber1Mode8_Fiber2Mode10_1.6mGL",
+    "id": "96334e1c-43cb-439c-b648-64c243442bd0",
+    "isActive": false,
+    "autoApply": true,
+    "dateCreated": "2025-12-11T19:29:39.484760885Z",
+    "simpleSequencing": {
+        "pingRate": 10000,
+        "pulseWidth": 23,
+        "pulseWidthMeters": 8.15343917675082,
+        "fiber1": {
+            "gaugeLength": 3,
+            "gaugeLengthMeters": 1.5952380997990738,
+            "channelPitchMeters": 1.5952380997990738,
+            "decimation": 3,
+            "stacking": 2,
+            "dataType": 8,
+            "customAcquisition": true,
+            "acquisitionStart": 0,
+            "acquisitionEnd": 4778,
+            "endOfFiberChannel": 1595,
+            "endOfFiberChannelOD": 2543.873046875,
+            "channelPitch": 3,
+            "migratedFromChannelPitch": true
+        },
+        "fiber2": {
+            "gaugeLength": 3,
+            "gaugeLengthMeters": 1.5952380997990738,
+            "channelPitchMeters": 1.5952380997990738,
+            "decimation": 3,
+            "stacking": 2,
+            "dataType": 10,
+            "customAcquisition": true,
+            "acquisitionStart": 0,
+            "acquisitionEnd": 4800,
+            "endOfFiberChannel": 1595,
+            "endOfFiberChannelOD": 2544.9365234375,
+            "channelPitch": 3,
+            "migratedFromChannelPitch": true
+        }
+    },
+    "fiber1Enabled": true,
+    "fiber2Enabled": true,
+    "fiber1Attenuation": 0,
+    "fiber2Attenuation": 0.00000202705,
+    "laserWavelength": {
+        "wavelengthOffset": 0.3
+    },
+    "lastWrittenLaserWavelength": {
+        "wavelengthOffset": 0
+    },
+    "launchPumpATemperature": 45.00014,
+    "launchPumpBTemperature": 45.00014,
+    "receive1SoaTemperature": 0,
+    "receive2SoaTemperature": 0,
+    "mode9Filter": 0,
+    "triggers": {
+        "onFalling": false,
+        "onboard": true,
+        "voltage": 1.1999695,
+        "bias": false
+    },
+    "extendedRangeTable": "",
+    "fftShifts": null,
+    "filterCoeffs": null
+}

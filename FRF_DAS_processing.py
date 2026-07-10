@@ -8,12 +8,41 @@ import h5py
 import glob
 from tqdm import tqdm
 import re
+import json
 
 
 def sequence_number(path):
     filename = os.path.basename(path) #pull filename
     match = re.search(r'_(\d+)\.h5$', filename)  #looks for a string of the form "_<number>.h5" at the end of the filename
     return int(match.group(1)) #return the number as an integer
+
+
+def read_Json(filepath):
+
+    def print_json(obj, indent=0):
+        prefix = "    " * indent  #resursively read all data in the json file
+
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, (dict, list)):
+                    print(f"{prefix}{key}:")
+                    print_json(value, indent + 1)
+                else:
+                    print(f"{prefix}{key}: {value}")
+
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                if isinstance(item, (dict, list)):
+                    print(f"{prefix}[{i}]")
+                    print_json(item, indent + 1)
+                else:
+                    print(f"{prefix}[{i}]: {item}")
+
+    with open(filepath, 'r') as f:  #open input file
+        data = json.load(f)  #load data
+
+    print_json(data)  #print
+
 
 
 def time2dateTime(time_array):
@@ -238,6 +267,7 @@ if __name__ == "__main__":
     #define gauge length and sampling frequency
     gauge_length = 1.6 #meters
     sampling_frequency = 500 #hz
+    temporal_window = 10 #minutes - similar to the moving window used in Glover et al., 2024
     #1592 channels - fiber one
 
 
@@ -251,7 +281,7 @@ if __name__ == "__main__":
     processor = DASProcessor(
         gauge_length=gauge_length,
         sampling_frequency=sampling_frequency,
-        temporal_window=10, #minutes - similar to the moving window used in Glover et al., 2024
+        temporal_window=temporal_window,
         save_path=os.path.join(savefolder, 'Processed_data_')
     )
 

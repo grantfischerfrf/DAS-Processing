@@ -1,0 +1,1046 @@
+{
+  "Metadata": {
+    "description": "defaultChain",
+    "timestamp": "2026-04-24T18:33:45.353401943Z",
+    "versioning": {
+      "chain": "SimpleLinearAssetChainFiber1",
+      "config": 50
+    }
+  },
+  "Modules": [
+    {
+      "Module": "AutoSetup",
+      "Name": "autoSetup"
+    },
+    {
+      "Module": "OnyxAcquisition",
+      "Name": "onyxAcquisition"
+    },
+    {
+      "Module": "AutoLoopRemove",
+      "Name": "loopRemove"
+    },
+    {
+      "Module": "OnyxFirmware",
+      "Name": "onyxFirmware"
+    },
+    {
+      "Module": "OnyxLogging",
+      "Name": "onyxLogging"
+    },
+    {
+      "Module": "RecorderFactory",
+      "Name": "recorderFactory"
+    },
+    {
+      "Module": "Correct",
+      "Name": "correct"
+    },
+    {
+      "Module": "SourceMonitor",
+      "Name": "sourceMonitor"
+    },
+    {
+      "Module": "DCBlocker",
+      "Name": "dcBlocker"
+    },
+    {
+      "Module": "Decimator",
+      "Name": "decimator"
+    },
+    {
+      "Module": "RollingTimeseriesRecorder",
+      "Name": "rollingTimeseriesRecorder"
+    },
+    {
+      "Module": "Band",
+      "Name": "overviewBandGenerator"
+    },
+    {
+      "Module": "BandAverager",
+      "Name": "overviewAveragedWaterfall"
+    },
+    {
+      "Module": "RollingBandRecorder",
+      "Name": "averagedWaterfallRollingRecorder"
+    },
+    {
+      "Module": "FFT",
+      "Name": "fullBandFFT"
+    },
+    {
+      "Module": "Normaliser",
+      "Name": "overviewNormalisedWaterfall"
+    },
+    {
+      "Module": "RollingBandRecorder",
+      "Name": "normalisedWaterfallRollingRecorder"
+    },
+    {
+      "Module": "EventsStreamer",
+      "Name": "eventsStreamer"
+    },
+    {
+      "Module": "EventsStore",
+      "Name": "eventsStore"
+    },
+    {
+      "Module": "OnyxFiberBreakDetector",
+      "Name": "onyxFiberBreakDetector"
+    },
+    {
+      "Module": "TonalMasker",
+      "Name": "tonalMasker"
+    },
+    {
+      "Module": "EventSeverityUpdater",
+      "Name": "EventProcessing/eventSeverityUpdater"
+    },
+    {
+      "Module": "EventAssociator",
+      "Name": "EventProcessing/globalEventAssociator"
+    },
+    {
+      "Module": "EventAssociator",
+      "Name": "EventProcessing/eventSuppressor"
+    },
+    {
+      "Module": "EventAssociator",
+      "Name": "EventProcessing/eventClusterAssociator"
+    },
+    {
+      "Module": "EventSeverityUpdater",
+      "Name": "EventProcessing/eventSeverityClusterUpdater"
+    },
+    {
+      "Module": "EventMergerV2",
+      "Name": "EventProcessing/eventMerger"
+    },
+    {
+      "Module": "FFT",
+      "Name": "fft64"
+    },
+    {
+      "Module": "FFT",
+      "Name": "fft128"
+    },
+    {
+      "Module": "FFT",
+      "Name": "fft512"
+    },
+    {
+      "Module": "Powermeter",
+      "Name": "powermeter"
+    },
+    {
+      "Module": "PacketResizer",
+      "Name": "packetResizer"
+    },
+    {
+      "Module": "Decimator",
+      "Name": "decimator_infragravity"
+    },
+    {
+      "Module": "SensorDataHDF5",
+      "Name": "SensorDataH5Recorder_DOQRgcmvg"
+    },
+    {
+      "Module": "SensorDataHDF5",
+      "Name": "SensorDataH5Recorder_R3ASMfGvR"
+    },
+    {
+      "Module": "SensorDataHDF5",
+      "Name": "SensorDataH5Recorder_u9848BGDg"
+    }
+  ],
+  "Connections": [
+    {
+      "Source": "onyxAcquisition",
+      "Destination": "correct"
+    },
+    {
+      "Source": "correct",
+      "Destination": "loopRemove"
+    },
+    {
+      "Source": "loopRemove",
+      "Destination": "sourceMonitor"
+    },
+    {
+      "Source": "loopRemove",
+      "Destination": "dcBlocker"
+    },
+    {
+      "Source": "dcBlocker",
+      "Destination": "decimator"
+    },
+    {
+      "Source": "decimator",
+      "Destination": "rollingTimeseriesRecorder"
+    },
+    {
+      "Source": "fullBandFFT",
+      "Destination": "overviewBandGenerator"
+    },
+    {
+      "Source": "overviewBandGenerator",
+      "Destination": "overviewAveragedWaterfall"
+    },
+    {
+      "Source": "overviewAveragedWaterfall",
+      "Destination": "averagedWaterfallRollingRecorder"
+    },
+    {
+      "Source": "overviewAveragedWaterfall",
+      "Destination": "overviewNormalisedWaterfall"
+    },
+    {
+      "Source": "overviewNormalisedWaterfall",
+      "Destination": "normalisedWaterfallRollingRecorder"
+    },
+    {
+      "Source": "noiseFloorProcessor",
+      "Destination": "onyxFiberBreakDetector"
+    },
+    {
+      "Source": "onyxFiberBreakDetector",
+      "Destination": "eventsStore"
+    },
+    {
+      "Source": "onyxFiberBreakDetector",
+      "Destination": "eventsStreamer"
+    },
+    {
+      "Source": "decimator",
+      "Destination": "fullBandFFT"
+    },
+    {
+      "Source": "EventProcessing/globalEventAssociator",
+      "Destination": "EventProcessing/eventSeverityUpdater"
+    },
+    {
+      "Source": "EventProcessing/eventSeverityUpdater",
+      "Destination": "EventProcessing/eventMerger"
+    },
+    {
+      "Source": "EventProcessing/eventMerger",
+      "Destination": "EventProcessing/eventClusterAssociator"
+    },
+    {
+      "Source": "EventProcessing/eventClusterAssociator",
+      "Destination": "EventProcessing/eventSeverityClusterUpdater"
+    },
+    {
+      "Source": "EventProcessing/eventSeverityClusterUpdater",
+      "Destination": "EventProcessing/eventSuppressor"
+    },
+    {
+      "Source": "EventProcessing/eventSuppressor",
+      "Destination": "eventsStreamer"
+    },
+    {
+      "Source": "EventProcessing/eventSuppressor",
+      "Destination": "eventsStore"
+    },
+    {
+      "Source": "decimator",
+      "Destination": "fft64"
+    },
+    {
+      "Source": "decimator",
+      "Destination": "fft128"
+    },
+    {
+      "Source": "decimator",
+      "Destination": "fft512"
+    },
+    {
+      "Source": "dcBlocker",
+      "Destination": "decimator_infragravity"
+    },
+    {
+      "Source": "/decimator",
+      "Destination": "SensorDataH5Recorder_DOQRgcmvg"
+    },
+    {
+      "Source": "/decimator",
+      "Destination": "SensorDataH5Recorder_R3ASMfGvR"
+    },
+    {
+      "Source": "/decimator",
+      "Destination": "SensorDataH5Recorder_u9848BGDg"
+    }
+  ],
+  "Configuration": [
+    {
+      "Module": "EventProcessing/eventClusterAssociator",
+      "Configuration": {
+        "enabled": false,
+        "suppressOnly": false,
+        "suppressEarlierEvents": false,
+        "passThruOtherEvents": true,
+        "associationDistanceM": 0,
+        "timeout": 0,
+        "earlierSuppressionTimeout": 0,
+        "useHighestSeverity": false,
+        "fixLocation": false,
+        "fixTime": false,
+        "overridingRules": []
+      }
+    },
+    {
+      "Module": "EventProcessing/eventMerger",
+      "Configuration": {
+        "enabled": false,
+        "passThruOtherEvents": true,
+        "rules": []
+      }
+    },
+    {
+      "Module": "EventProcessing/eventSeverityClusterUpdater",
+      "Configuration": {
+        "enabled": true,
+        "rules": []
+      }
+    },
+    {
+      "Module": "EventProcessing/eventSeverityUpdater",
+      "Configuration": {
+        "enabled": true,
+        "rules": null
+      }
+    },
+    {
+      "Module": "EventProcessing/eventSuppressor",
+      "Configuration": {
+        "enabled": false,
+        "suppressOnly": true,
+        "suppressEarlierEvents": false,
+        "passThruOtherEvents": true,
+        "associationDistanceM": 0,
+        "timeout": 0,
+        "earlierSuppressionTimeout": 0,
+        "useHighestSeverity": false,
+        "fixLocation": false,
+        "fixTime": false,
+        "overridingRules": []
+      }
+    },
+    {
+      "Module": "EventProcessing/globalEventAssociator",
+      "Configuration": {
+        "enabled": false,
+        "suppressOnly": false,
+        "suppressEarlierEvents": false,
+        "passThruOtherEvents": true,
+        "associationDistanceM": 100,
+        "timeout": 60000000000,
+        "earlierSuppressionTimeout": 0,
+        "useHighestSeverity": false,
+        "fixLocation": false,
+        "fixTime": false,
+        "overridingRules": []
+      }
+    },
+    {
+      "Module": "OTDR",
+      "Configuration": {
+        "pingRate": 1000,
+        "f1Attenuation": 45,
+        "f2Attenuation": 45,
+        "launchPulse": 100,
+        "enableOTDRConfig": false,
+        "pulsePower": 100,
+        "integratorConfig": {
+          "recordingFolder": "",
+          "outputPeriodSec": 2,
+          "maxIntegrationPeriodSec": 60,
+          "stabilityDelta": 0.1,
+          "rmsThreshold": 0.02,
+          "stabilityPercentageThreshold": 90,
+          "numChannelsToCheck": 200,
+          "windowSize": 19,
+          "calibrationValue": 0
+        },
+        "eventThreshold": 1,
+        "maxEvents": 100,
+        "initialLossLimit": 6,
+        "singleReflectionLimit": 6,
+        "singleLossLimit": 1,
+        "totalLossLimit": 12,
+        "disableSystemErrors": false
+      }
+    },
+    {
+      "Module": "SensorDataH5Recorder_DOQRgcmvg",
+      "Configuration": {
+        "basic": {
+          "oneMinuteAligned": false,
+          "secondAligned": false,
+          "usingMaxFileDuration": true,
+          "maxFileDurationNanos": 300000000000,
+          "usingMaxFileSizeBytes": false,
+          "maxFileSizeBytes": 0,
+          "checkPeriodSeconds": 1000000000,
+          "stopOnLimits": false,
+          "rollingEnabled": true,
+          "maxSizeBytes": 300000000000,
+          "usingMaxFolderDuration": false,
+          "maxFolderDuration": 0,
+          "autoNumber": true,
+          "filename": "decimator",
+          "includeDate": true,
+          "dateFormat": "2006-01-02_15.04.05_MST",
+          "extraField": "",
+          "extension": "h5",
+          "format": 0,
+          "devices": [],
+          "recordingPath": "/opt/onyx/recordingJail/mnt/extSSD1/manualRecordings/Continuous_Fiber1RollingRecorder_1.6mGL",
+          "displayName": "decimator"
+        },
+        "channelExtents": {
+          "customExtents": 1,
+          "startChannel": 0,
+          "numChannels": 0,
+          "startOD": 0,
+          "endOD": 0
+        },
+        "triggerConfig": {
+          "triggered": false,
+          "preTriggerTime": 0,
+          "postTriggerTime": 0,
+          "maxTriggerDelay": 1000,
+          "overrideBlocking": false,
+          "overrideBlockingValue": false
+        },
+        "writer": {
+          "hdf5CompressionEnabled": false
+        },
+        "indirect": {}
+      }
+    },
+    {
+      "Module": "SensorDataH5Recorder_R3ASMfGvR",
+      "Configuration": {
+        "basic": {
+          "oneMinuteAligned": false,
+          "secondAligned": false,
+          "usingMaxFileDuration": true,
+          "maxFileDurationNanos": 300000000000,
+          "usingMaxFileSizeBytes": false,
+          "maxFileSizeBytes": 0,
+          "checkPeriodSeconds": 1000000000,
+          "stopOnLimits": false,
+          "rollingEnabled": true,
+          "maxSizeBytes": 300000000000,
+          "usingMaxFolderDuration": false,
+          "maxFolderDuration": 0,
+          "autoNumber": true,
+          "filename": "decimator",
+          "includeDate": true,
+          "dateFormat": "2006-01-02_15.04.05_MST",
+          "extraField": "",
+          "extension": "h5",
+          "format": 0,
+          "devices": [],
+          "recordingPath": "/opt/onyx/recordingJail/mnt/extSSD1/manualRecordings/Fiber1RollingRecorder_2.6mGL_1kHz",
+          "displayName": "decimator"
+        },
+        "channelExtents": {
+          "customExtents": 1,
+          "startChannel": 0,
+          "numChannels": 0,
+          "startOD": 0,
+          "endOD": 0
+        },
+        "triggerConfig": {
+          "triggered": false,
+          "preTriggerTime": 0,
+          "postTriggerTime": 0,
+          "maxTriggerDelay": 1000,
+          "overrideBlocking": false,
+          "overrideBlockingValue": false
+        },
+        "writer": {
+          "hdf5CompressionEnabled": false
+        },
+        "indirect": {}
+      }
+    },
+    {
+      "Module": "SensorDataH5Recorder_u9848BGDg",
+      "Configuration": {
+        "basic": {
+          "oneMinuteAligned": false,
+          "secondAligned": false,
+          "usingMaxFileDuration": true,
+          "maxFileDurationNanos": 300000000000,
+          "usingMaxFileSizeBytes": false,
+          "maxFileSizeBytes": 0,
+          "checkPeriodSeconds": 1000000000,
+          "stopOnLimits": false,
+          "rollingEnabled": true,
+          "maxSizeBytes": 300000000000,
+          "usingMaxFolderDuration": false,
+          "maxFolderDuration": 0,
+          "autoNumber": true,
+          "filename": "decimator",
+          "includeDate": true,
+          "dateFormat": "2006-01-02_15.04.05_MST",
+          "extraField": "",
+          "extension": "h5",
+          "format": 0,
+          "devices": [],
+          "recordingPath": "/opt/onyx/recordingJail/mnt/extSSD1/manualRecordings/Fiber1RollingRecorder_3.7mGL_1kHz",
+          "displayName": "decimator"
+        },
+        "channelExtents": {
+          "customExtents": 1,
+          "startChannel": 0,
+          "numChannels": 0,
+          "startOD": 0,
+          "endOD": 0
+        },
+        "triggerConfig": {
+          "triggered": false,
+          "preTriggerTime": 0,
+          "postTriggerTime": 0,
+          "maxTriggerDelay": 1000,
+          "overrideBlocking": false,
+          "overrideBlockingValue": false
+        },
+        "writer": {
+          "hdf5CompressionEnabled": false
+        },
+        "indirect": {}
+      }
+    },
+    {
+      "Module": "averagedWaterfallRollingRecorder",
+      "Configuration": {
+        "name": "Waterfall",
+        "sortIndex": 0,
+        "recorderPath": "$EXTSSD1",
+        "historyDuration": 86400000000000,
+        "maxFileDuration": 600000000000,
+        "enabled": true,
+        "linesPerFile": 1000,
+        "overrideMinMax": false,
+        "min": -70,
+        "max": -30,
+        "debugMode": false,
+        "temporaryImageDuration": 120000000000
+      }
+    },
+    {
+      "Module": "correct",
+      "Configuration": {
+        "enabled": false,
+        "twoWayDBPerMeter": 0.0004,
+        "flip": false
+      }
+    },
+    {
+      "Module": "dcBlocker",
+      "Configuration": {
+        "enabled": false,
+        "dCCutoffHz": 1,
+        "order": 3,
+        "rippleDB": 0.1
+      }
+    },
+    {
+      "Module": "decimator",
+      "Configuration": {
+        "enabled": true,
+        "decimationType": 0,
+        "targetFrequencyHz": 500,
+        "toleranceFrequencyHz": 5,
+        "disableAutomaticPPSAlignment": false,
+        "waitForInitialOuputPacketToFill": false
+      }
+    },
+    {
+      "Module": "decimator_infragravity",
+      "Configuration": {
+        "enabled": true,
+        "decimationType": 1,
+        "targetFrequencyHz": 5,
+        "toleranceFrequencyHz": 1,
+        "disableAutomaticPPSAlignment": false,
+        "waitForInitialOuputPacketToFill": false
+      }
+    },
+    {
+      "Module": "eventsStore",
+      "Configuration": {
+        "defaultHistoryAgeLimit": 86400000000000,
+        "defaultEventAgeLimit": 604800000000000,
+        "eventTypes": null,
+        "detectActivitySpikes": false,
+        "spikeDetectionPeriod": 0
+      }
+    },
+    {
+      "Module": "eventsStreamer",
+      "Configuration": {
+        "enableSlimVehicles": false,
+        "blockSuppressedEvents": false,
+        "debug": false,
+        "eventLifespan": 30000000000,
+        "dataExtract": {
+          "enabled": false,
+          "sharedAWSCreds": false,
+          "extractions": null
+        }
+      }
+    },
+    {
+      "Module": "fft128",
+      "Configuration": {
+        "size": 128,
+        "overlapPercent": 50,
+        "windowID": 2,
+        "demean": false,
+        "zeroPadFactor": 1,
+        "outputPower": true,
+        "outputComplex": false,
+        "coherentGain": false
+      }
+    },
+    {
+      "Module": "fft512",
+      "Configuration": {
+        "size": 512,
+        "overlapPercent": 50,
+        "windowID": 2,
+        "demean": false,
+        "zeroPadFactor": 1,
+        "outputPower": true,
+        "outputComplex": false,
+        "coherentGain": false
+      }
+    },
+    {
+      "Module": "fft64",
+      "Configuration": {
+        "size": 64,
+        "overlapPercent": 50,
+        "windowID": 2,
+        "demean": false,
+        "zeroPadFactor": 1,
+        "outputPower": true,
+        "outputComplex": false,
+        "coherentGain": false
+      }
+    },
+    {
+      "Module": "fullBandFFT",
+      "Configuration": {
+        "size": 128,
+        "overlapPercent": 50,
+        "windowID": 2,
+        "demean": false,
+        "zeroPadFactor": 1,
+        "outputPower": true,
+        "outputComplex": false,
+        "coherentGain": false
+      }
+    },
+    {
+      "Module": "loopRemove",
+      "Configuration": {
+        "enabled": true
+      }
+    },
+    {
+      "Module": "noiseFloorProcessInjector",
+      "Configuration": {
+        "enabled": true,
+        "blocking": true,
+        "timeout": 0
+      }
+    },
+    {
+      "Module": "noiseFloorProcessor",
+      "Configuration": {
+        "disable": false,
+        "channelSkipperConfig": {
+          "enabled": false,
+          "newChannelSpacing": 0
+        },
+        "noiseFloorProcessorConfig": {
+          "averagingTime": 6,
+          "averagingWindowSize": 50,
+          "oneWayLossPerKm": 0.2,
+          "slopeParameters": {
+            "frontStart": 0,
+            "frontEnd": 70,
+            "backStart": 80,
+            "backEnd": 100
+          },
+          "targetNoiseFloors": [
+            {
+              "pingRate": 1000,
+              "level": -63,
+              "maxOD": 110000
+            },
+            {
+              "pingRate": 1600,
+              "level": -63,
+              "maxOD": 70000
+            },
+            {
+              "pingRate": 2000,
+              "level": -63,
+              "maxOD": 55000
+            },
+            {
+              "pingRate": 4000,
+              "level": -66,
+              "maxOD": 26000
+            },
+            {
+              "pingRate": 8000,
+              "level": -69,
+              "maxOD": 13000
+            },
+            {
+              "pingRate": 10000,
+              "level": -72,
+              "maxOD": 11000
+            },
+            {
+              "pingRate": 16000,
+              "level": -75,
+              "maxOD": 7000
+            },
+            {
+              "pingRate": 20000,
+              "level": -77,
+              "maxOD": 5500
+            },
+            {
+              "pingRate": 32000,
+              "level": -78,
+              "maxOD": 3200
+            },
+            {
+              "pingRate": 40000,
+              "level": -80,
+              "maxOD": 2600
+            },
+            {
+              "pingRate": 64000,
+              "level": -81,
+              "maxOD": 1600
+            },
+            {
+              "pingRate": 80000,
+              "level": -83,
+              "maxOD": 1300
+            },
+            {
+              "pingRate": 100000,
+              "level": -90,
+              "maxOD": 1100
+            }
+          ]
+        },
+        "autoAttenuatorConfig": {
+          "oneWayLossPerKm": 0,
+          "absoluteDynamicRange": {
+            "useMinMax": false,
+            "minValue": 0,
+            "maxValue": 0
+          },
+          "targetDeltaDynamicRange": {
+            "useMinMax": false,
+            "minValue": 0,
+            "maxValue": 0
+          },
+          "changeDynamicRange": {
+            "useMinMax": false,
+            "minValue": 0,
+            "maxValue": 0
+          },
+          "smoothDeltas": false,
+          "averagingWindowSize": 0,
+          "changeLag": 0,
+          "recordPath": ""
+        }
+      }
+    },
+    {
+      "Module": "normalisedWaterfallRollingRecorder",
+      "Configuration": {
+        "name": "Normalised Waterfall",
+        "sortIndex": 0,
+        "recorderPath": "$EXTSSD1",
+        "historyDuration": 86400000000000,
+        "maxFileDuration": 600000000000,
+        "enabled": true,
+        "linesPerFile": 1000,
+        "overrideMinMax": false,
+        "min": -5,
+        "max": 20,
+        "debugMode": false,
+        "temporaryImageDuration": 120000000000
+      }
+    },
+    {
+      "Module": "onyxAcquisition",
+      "Configuration": {
+        "enableOutput": true,
+        "useConfigurationCaptureInterface": false,
+        "captureInterface": "eth0",
+        "captureInterfaceFiber2": "eth1",
+        "sourceMac": "5A:01:02:03:04:05",
+        "destinationMac": "00:0c:8b:92:05:46",
+        "leakyCutoffHz": 0.001,
+        "overrideLeakyCoefficient": false,
+        "leakyCoefficientOverride": 0,
+        "outputDiffPhase": false,
+        "iirFilter": 20,
+        "receiveCRCBytes": false,
+        "printDebug": false,
+        "printTriggersDebug": false,
+        "triggerControl0": {
+          "onRising": false,
+          "onFalling": false
+        },
+        "triggerControl1": {
+          "onRising": false,
+          "onFalling": false
+        },
+        "triggerControl2": {
+          "onRising": false,
+          "onFalling": false
+        },
+        "triggerControl3": {
+          "onRising": false,
+          "onFalling": false
+        },
+        "importOpticsOnStartup": false,
+        "dumpFrameHeaders": false,
+        "dumpHeaderBoundarySeconds": 0,
+        "dumpHeaderWindowMillis": 0,
+        "processDDCthroughGPU": true,
+        "processMode": 2,
+        "Mode 8+ Limit": 0.9,
+        "Mode 8+ AverageOverPings": 1,
+        "Mode 8+ RefAvgPings": 1,
+        "Mode 8+ NrFilteredPings": 1,
+        "headerDumpStart": "0001-01-01T00:00:00Z",
+        "headerDumpEnd": "0001-01-01T00:00:00Z",
+        "dualStreamEnabled": false,
+        "stream1Flipped": false,
+        "stream2Flipped": false,
+        "frameRecorderConfig": {
+          "enableFrameRecorder": false,
+          "recordPath": "",
+          "recordFibreSubset": false,
+          "recorderChannelRange": {
+            "startChannel": 0,
+            "numChannels": 0
+          }
+        }
+      }
+    },
+    {
+      "Module": "onyxFiberBreakDetector",
+      "Configuration": {
+        "fibreBreakConfig": {
+          "enabled": false,
+          "useMinWidthM": false,
+          "minWidthM": 0,
+          "useMinDuration": false,
+          "minDuration": 0,
+          "fibreBreakEventType": "Fiber Break",
+          "fibreMissingEventType": "Fiber Missing or Laser Off",
+          "thresholdDB": -33.48187728361398,
+          "thresholdReductionDB": 3
+        }
+      }
+    },
+    {
+      "Module": "onyxLogging",
+      "Configuration": {
+        "timePeriod": 30000000000
+      }
+    },
+    {
+      "Module": "overviewAveragedWaterfall",
+      "Configuration": {
+        "enabled": true,
+        "name": "",
+        "averagingType": 1,
+        "averagePeriodSec": 0.1,
+        "useOverlapping": false,
+        "outputPeriodSec": 0.1
+      }
+    },
+    {
+      "Module": "overviewBandGenerator",
+      "Configuration": {
+        "bands": [
+          {
+            "start": 15,
+            "end": 25,
+            "usingFractions": false,
+            "fMin": 0,
+            "fMax": 0,
+            "transferToUIIn32Bit": false,
+            "usingMinMaxDB": true,
+            "minDB": -50,
+            "maxDB": -30,
+            "name": ""
+          }
+        ],
+        "applyTonalMasks": false,
+        "sideBinsToMask": 2,
+        "overideTonalMask": ""
+      }
+    },
+    {
+      "Module": "overviewNormalisedWaterfall",
+      "Configuration": {
+        "enabled": true,
+        "normalisationType": 0,
+        "boxCarPattern": "s--nnnnnnn",
+        "noiseBand": -1,
+        "demeanBoxCar": false,
+        "alpha": 0.1,
+        "holdNoiseLevels": true,
+        "holdThreshold": 5,
+        "useDBs": false,
+        "smaBufferLengthSec": 10,
+        "useInitialNoiseLevel": false,
+        "initialNoiseLevelDB": 0,
+        "minOfMinPeriodShortSec": 1,
+        "minOfMinPeriodLongSec": 5,
+        "transferToUIIn32Bit": false,
+        "usingMinMaxDB": true,
+        "minDB": -5,
+        "maxDB": 20,
+        "percentile": 25,
+        "analysisDuration": 4,
+        "useMidAsSignal": false,
+        "debugChannel": 0
+      }
+    },
+    {
+      "Module": "packetResizer",
+      "Configuration": {
+        "targetSamples": 64
+      }
+    },
+    {
+      "Module": "powermeter",
+      "Configuration": {
+        "configs": [
+          {
+            "Power Meter Label": "A",
+            "PMD100D Meter Serial Number": "P0026893",
+            "S146C Sensor Serial Number": "200217303"
+          },
+          {
+            "Power Meter Label": "B",
+            "PMD100D Meter Serial Number": "P0026964",
+            "S146C Sensor Serial Number": "200527312"
+          },
+          {
+            "Power Meter Label": "C",
+            "PMD100D Meter Serial Number": "P0022111",
+            "S146C Sensor Serial Number": "190201305"
+          },
+          {
+            "Power Meter Label": "D",
+            "PMD100D Meter Serial Number": "1",
+            "S146C Sensor Serial Number": "1"
+          }
+        ]
+      }
+    },
+    {
+      "Module": "recorderFactory",
+      "Configuration": {
+        "paths": [
+          {
+            "id": "I05mr7EnffZUG4Kkh5iNyQ",
+            "filepath": "/opt/onyx/recordingJail/mnt/extSSD1/manualRecordings/Continuous_Fiber1RollingRecorder_1.6mGL",
+            "dirExists": true
+          }
+        ],
+        "groups": {}
+      }
+    },
+    {
+      "Module": "rollingTimeseriesRecorder",
+      "Configuration": {
+        "name": "Timeseries",
+        "sortIndex": 0,
+        "recorderPath": "$EXTSSD1",
+        "historyDuration": 86400000000000,
+        "maxFileDuration": 120000000000,
+        "enabled": true,
+        "classificationPath": "."
+      }
+    },
+    {
+      "Module": "sourceMonitor",
+      "Configuration": {
+        "dataNotFlowingTimeout": 5000000000,
+        "watchDogEnabled": false,
+        "durationWithoutDataBeforeRestart": 900000000000,
+        "stallingConfig": {
+          "logUpdateRate": 1000000000,
+          "enableLog": false,
+          "systemEventOnStall": false,
+          "durationBeforeStallSystemEvent": 250000000
+        }
+      }
+    },
+    {
+      "Module": "systemTimeSource",
+      "Configuration": {
+        "mode": 0
+      }
+    },
+    {
+      "Module": "systemTriggerMonitor",
+      "Configuration": {
+        "enabled": true,
+        "mode": 1,
+        "initialTriggerID": 0,
+        "resetTriggerID": false,
+        "type": 3,
+        "onFalling": false,
+        "voltage": 1.2,
+        "bias": false,
+        "TrigMsgPortNumber": 21236,
+        "NavMsgPortNumber": 21235,
+        "SrcMsgPortNumber": 21237,
+        "delayDuration": 0
+      }
+    },
+    {
+      "Module": "tonalMasker",
+      "Configuration": {
+        "enabled": false,
+        "masks": []
+      }
+    },
+    {
+      "Module": "variables",
+      "Configuration": {
+        "keyValues": [
+          {
+            "key": "EXTSSD1",
+            "value": "/mnt/extSSD1/RollingRecorders"
+          }
+        ]
+      }
+    }
+  ]
+}
