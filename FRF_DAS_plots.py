@@ -6,16 +6,8 @@ import os
 import numpy as np
 import glob
 from tqdm import tqdm
-from FRF_DAS_processing import read_dasFile, sequence_number
+from FRF_DAS_processing import read_dasFile, sequence_number, time2dateTime
 from scipy.signal import welch, spectrogram
-
-
-def time2dateTime(time_array):
-
-    #convert array of unix timestamps to datetime objects
-    dateTime_array = np.array([datetime.fromtimestamp(t, tz=timezone.utc) for t in time_array])
-    return dateTime_array
-
 
 def load_processedData(processed_data_path):
 
@@ -40,31 +32,34 @@ def plot_timeSeries(data, time, channel:int):
     plt.close('all')
 
 
-def waterFall(data, time, channel_spacing, starttime:datetime, endtime:datetime, channel_start:int, channel_end:int, savepath:str, multi_file=False):
+def waterFall(data, time, channel_spacing, channel_start:int, channel_end:int, savepath:str, starttime:datetime=None, endtime:datetime=None):
 
-    if not multi_file:
-        #plot a waterfall plot of the strain data between starttime and endtime
-        fig, ax = plt.subplots(figsize=(10, 8))
-        channels = np.arange(channel_start, channel_end)  # create an array of channel indices
+    #plot a waterfall plot of the strain data between starttime and endtime
+    fig, ax = plt.subplots(figsize=(10, 8))
+    channels = np.arange(channel_start, channel_end)  # create an array of channel indices
 
-        #convert channels to cross-shore distance - We need to know the exact fiber orientation in order to do this. It may not be perpendicular to shore anymore
-        along_cable_distance = channels * channel_spacing  # convert channel indices to distance along the cable
+    #convert channels to cross-shore distance - We need to know the exact fiber orientation in order to do this. It may not be perpendicular to shore anymore
+    along_cable_distance = channels * channel_spacing  # convert channel indices to distance along the cable
 
-        v = np.nanpercentile(np.abs(data), 99) # get the 99th percentile of the absolute value of the data to set the color scale limits - limit outliers
-        pcm = ax.pcolormesh(time, along_cable_distance, data.T, shading='auto', vmin=-v, vmax=v, cmap='RdBu')
-        ax.set_xlim(starttime, endtime)
-        ax.set_xlabel('Time (UTC)')
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-        ax.set_ylabel('Along-Cable Distance (m)')
+    v = np.nanpercentile(np.abs(data), 99) # get the 99th percentile of the absolute value of the data to set the color scale limits - limit outliers
+    pcm = ax.pcolormesh(time, along_cable_distance, data.T, shading='auto', vmin=-v, vmax=v, cmap='RdBu')
+    ax.set_xlabel('Time (UTC)')
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+    ax.set_ylabel('Along-Cable Distance (m)')
+    if starttime is not None:
         ax.set_title('Waterfall Plot' + starttime.strftime('_%Y_%m_%d_%H:%M') + '_to_' + endtime.strftime('%Y_%m_%d_%H:%M'))
-        ax.set_ylim(600, 1500)
-        ax.tick_params(axis='x', rotation=45)
-        cbar = plt.colorbar(pcm, ax=ax)
-        cbar.set_label("Strain")
-        plt.tight_layout()
-        plt.savefig(savepath + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '_alongshore.png')
-        plt.show()
-        plt.close('all')
+        ax.set_xlim(starttime, endtime)
+    else:
+        ax.set_title('Waterfall Plot' + time[0].strftime('_%Y_%m_%d_%H:%M') + '_to_' + time[-1].strftime('%Y_%m_%d_%H:%M'))
+        ax.set_xlim(time[0], time[-1])
+    # ax.set_ylim(600, 1500)
+    ax.tick_params(axis='x', rotation=45)
+    cbar = plt.colorbar(pcm, ax=ax)
+    cbar.set_label("Strain")
+    plt.tight_layout()
+    plt.savefig(savepath + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '.png')
+    # plt.show()
+    plt.close('all')
 
 
 def build_spectrogram_data(all_files, channel:int, sampling_frequency=500,
@@ -153,15 +148,28 @@ if __name__ == "__main__":
     datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
 
     #define starttime and endtime for plotting
-    starttime = datetime(2026, 6, 6, 13, 0, 0, tzinfo=timezone.utc)
+    starttime = datetime(2026, 6, 6, 0, 0, 0, tzinfo=timezone.utc)
     endtime = datetime(2026, 6, 6, 13, 5, 0, tzinfo=timezone.utc)
 
     '''CREATE WATERFALL PLOT'''
-    savepath = './figures/waterfall_UTC1300'
+    # savepath = './figures/20260601'
     channel_start = 0  #define start and end channels for plotting
-    channel_end = strain.shape[1]
+    # channel_end = strain.shape[1]
     channel_spacing=1.6 #meters
-    waterFall(strain, datetime_array, channel_spacing, starttime, endtime, channel_start, channel_end, savepath)  #TODO: this needs to handle several files (build incrementally) or one file.
+    # waterFall(strain, datetime_array, channel_spacing, starttime, endtime, channel_start, channel_end, savepath)
+
+    filepaths = sorted(glob.glob('./data/for_OSU_processed/20260601/*.h5'), key=sequence_number)
+    count = 0
+    for file in tqdm(filepaths):
+        strain, time = load_processedData(file)
+
+        channel_end = strain.shape[1]
+
+        savepath = f'./figures/20260601/Waterfall_'
+
+        waterFall(strain, time2dateTime(time), channel_spacing, channel_start, channel_end, savepath)
+
+
 
     '''CREATE SPECTROGRAM'''
     # savepath = './figures/spectrogram'

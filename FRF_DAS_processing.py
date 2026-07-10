@@ -13,9 +13,18 @@ import json
 
 def sequence_number(path):
     filename = os.path.basename(path) #pull filename
-    match = re.search(r'_(\d+)\.h5$', filename)  #looks for a string of the form "_<number>.h5" at the end of the filename
-    return int(match.group(1)) #return the number as an integer
 
+    #downsampled format
+    match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2})', filename) #looks for a string of dates
+    if match:
+        return datetime.strptime(match.group(1), "%Y-%m-%d_%H.%M.%S")
+
+    #old raw format
+    match = re.search(r'_(\d+)\.h5$', filename) #looks for a string of the form "_<number>.h5" at the end of the filename
+    if match:
+        return int(match.group(1)) #return the number as an integer
+
+    raise ValueError(f"Filename format not recognized: {filename}")
 
 def read_Json(filepath):
 
@@ -63,8 +72,12 @@ def read_dasFile(file_path:str):
     with h5py.File(file_path) as f:
 
         # keys = list(f.keys()) #list all keys
-        Acquisition = f['Acquisition']  #headers in h5 structure  #TODO: add a safety check to make sure the key exists
-        raw = Acquisition['Raw[0]']
+
+        if "Acquisition" in f:
+            raw = f['Acquisition']['Raw[0]']  #headers in h5 structure
+
+        else:
+            raw = f  #already decimated files without the header
 
         #read through each key and save as a variable to the dictionary
         for key in raw.keys():
@@ -124,7 +137,7 @@ class DASProcessor:
         self.strain_ds = None  # strain_dataset, will hold the resizable strain dataset once initialized  #FIXME: rename to dataset - ds is confusing
         self.time_ds = None  # time_dataset, will hold the resizable time dataset once initialized
 
-    def process_file(self, rawData, unix_time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
+    def process_file(self, rawData, unix_time, start_clip, stop_clip, downsample=True, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
 
         #antialiasing check - make sure the cutoff frequency is less than half the downsample frequency to avoid aliasing
         # assert cutoff_frequency < 0.5 * downsample_frequency, "Cutoff frequency must be less than half the downsample frequency to avoid aliasing."  #FIXME: uncomment me
@@ -150,17 +163,21 @@ class DASProcessor:
 
         strain_common_mode_removed = self.common_mode_removal(strain_temporal_detrend)  # common - mode removal (spatial detrend)
 
-        strain_low_pass_filtered = self.low_pass_filter(strain_common_mode_removed, cutoff_frequency=cutoff_frequency)  # low pass filter to remove high frequency noise
+        if downsample:
+            strain_low_pass_filtered = self.low_pass_filter(strain_common_mode_removed, cutoff_frequency=cutoff_frequency)  # low pass filter to remove high frequency noise
 
-        #downsample the data
-        strain_low_pass_filtered = strain_low_pass_filtered[start_clip:stop_clip]  #clip strain and time arrays
-        time_seconds = time_seconds[start_clip:stop_clip]
+            #downsample the data
+            strain_low_pass_filtered = strain_low_pass_filtered[start_clip:stop_clip]  #clip strain and time arrays
+            time_seconds = time_seconds[start_clip:stop_clip]
 
-        #downsample
-        strain_downsampled, time_downsampled = self.downsample(strain_low_pass_filtered, time_seconds, downsample_frequency=downsample_frequency)
+            #downsample
+            strain_downsampled, time_downsampled = self.downsample(strain_low_pass_filtered, time_seconds, downsample_frequency=downsample_frequency)
 
-        #write to hdf5 file
-        self._write(strain_downsampled, time_downsampled, multi_save)
+            #write to hdf5 file
+            self._write(strain_downsampled, time_downsampled, multi_save)
+
+        else:
+            self._write(strain_common_mode_removed[start_clip:stop_clip], time_seconds[start_clip:stop_clip], multi_save)
 
         # return strain_downsampled, time_downsampled
 
@@ -261,21 +278,18 @@ class DASProcessor:
 
 if __name__ == "__main__":
 
-    datafolder = os.getcwd() + '/data/raw_66/1400_UTC'
-    savefolder = os.getcwd() + '/data/processed_66/1400_UTC'
+    datafolder = os.getcwd() + '/data/for_OSU/20260601'
+    savefolder = os.getcwd() + '/data/for_OSU_processed/20260601'
 
     #define gauge length and sampling frequency
     gauge_length = 1.6 #meters
-    sampling_frequency = 500 #hz
+    sampling_frequency = 2 #hz
     temporal_window = 10 #minutes - similar to the moving window used in Glover et al., 2024
     #1592 channels - fiber one
 
 
     '''all files'''
     all_files = sorted(glob.glob(os.path.join(datafolder, '*.h5')), key=sequence_number)
-
-    # #get the initial collection time from the first file
-    # initial_collection =
 
     #instantiate the DASProcessor class
     processor = DASProcessor(
@@ -312,7 +326,7 @@ if __name__ == "__main__":
         stop_clip = start_clip + n
 
         #process raw strain data
-        processor.process_file(rawData, time, start_clip, stop_clip, cutoff_frequency=5, downsample_frequency=2, multi_save=False)  #TODO: can return the last processed data to plot if wanted in the future.
+        processor.process_file(rawData, time, start_clip, stop_clip, downsample=False, cutoff_frequency=5, downsample_frequency=2, multi_save=True)  #TODO: can return the last processed data to plot if wanted in the future.
 
     processor.close()
 

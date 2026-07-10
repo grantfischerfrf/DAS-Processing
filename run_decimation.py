@@ -12,8 +12,8 @@ if __name__ == "__main__":
 
     #!!multiprocessing must be run from a separate script that loads the functions
 
-    datafolder = "/mnt/d/For_OSU_raw/20260602/"
-    save_dir = os.getcwd() + "/data/for_OSU/20260602"
+    datafolder = "/mnt/d/For_OSU_raw/20260605/"
+    save_dir = os.getcwd() + "/data/for_OSU/20260605"
 
     #creates a sorted list of files for processing
     all_files = sorted(
