@@ -71,7 +71,7 @@ def build_spectrogram_data(all_files, channel:int, sampling_frequency=500,
     strain_list = []
     time_list = []  #FIXME: careful with the memory here
 
-    for file_path in tqdm(all_files):  #TODO: this will need to handle either one large file or a list of files.
+    for file_path in tqdm(all_files):
         raw_data = read_dasFile(file_path)
         # strain, time = load_processedData(file_path)
         strain = raw_data['RawData']  # shape (n_samples, n_channels)
@@ -85,7 +85,7 @@ def build_spectrogram_data(all_files, channel:int, sampling_frequency=500,
     strain_concat = np.concatenate(strain_list)   # shape (total_samples,)
     time_concat = np.concatenate(time_list)       # shape (total_samples,)
 
-    freqs, times, Sxx = spectrogram(   #TODO: how big are the frequency bins that this creates??
+    freqs, times, Sxx = spectrogram(
         strain_concat,
         fs=sampling_frequency,
         window='hann',

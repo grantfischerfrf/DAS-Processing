@@ -15,7 +15,7 @@ def sequence_number(path):
     filename = os.path.basename(path) #pull filename
 
     #downsampled format
-    match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2})', filename) #looks for a string of dates
+    match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2})', filename) #looks for a string of dates - regex
     if match:
         return datetime.strptime(match.group(1), "%Y-%m-%d_%H.%M.%S")
 
@@ -92,9 +92,11 @@ def phase2strain(phase_shifts, gauge_length):
     psi = 0.79  #pockel's coefficient for single mode glass fiber
     nc = 1.46  #index of refraction for the optical fiber
 
-    strain = (L / (4 * np.pi * nc * gauge_length * psi)) * phase_shifts
+    # strain = (L / (4 * np.pi * nc * gauge_length * psi)) * phase_shifts
+    coeff = np.float32(L / (4 * np.pi * nc * gauge_length * psi)) #cut to float32 to save memory
+    phase_shifts *= coeff  #multiply in place to avoid the creation of a second large array
 
-    return strain
+    return phase_shifts
 
 
 def plot_timeSeries(data, channel:int):
@@ -111,6 +113,66 @@ def plot_timeSeries(data, channel:int):
     ax.set_title(f'Time Series at Channel {channel}')
     plt.show()
     plt.close('all')
+
+
+def process_worker(i, all_files, savefolder):
+
+    gauge_length = 1.6
+    sampling_frequency = 500
+    temporal_window = 10
+
+    previous_file = read_dasFile(all_files[i - 1])
+    current_file  = read_dasFile(all_files[i])
+    next_file     = read_dasFile(all_files[i + 1])
+
+
+    rawData = np.vstack((
+        previous_file["RawData"],
+        current_file["RawData"],
+        next_file["RawData"]
+    ))
+
+    time = np.concatenate((
+        previous_file["RawDataTime"],
+        current_file["RawDataTime"],
+        next_file["RawDataTime"]
+    ))
+
+    n = current_file["RawData"].shape[0]
+    start_clip = previous_file["RawData"].shape[0]
+    stop_clip = start_clip + n
+
+    # Release memory as soon as possible
+    del previous_file
+    del current_file
+    del next_file
+
+    processor = DASProcessor(
+        gauge_length=gauge_length,
+        sampling_frequency=sampling_frequency,
+        temporal_window=temporal_window,
+        save_path=os.path.join(savefolder, "Processed_data_")
+    )
+
+
+    processor.process_file(
+        rawData,
+        time,
+        start_clip,
+        stop_clip,
+        downsample=True,
+        cutoff_frequency=5,
+        downsample_frequency=2,
+        multi_save=True,
+    )
+
+    del rawData
+    del time
+
+    processor.close()
+
+
+    return i
 
 
 class DASProcessor:
@@ -235,7 +297,7 @@ class DASProcessor:
             maxshape=(None, n_ch), #maximum shape - allow for unlimited growth in the time dimension
             dtype=np.float32, #datatype, keep storage light bc DAS data is dense
             chunks=(chunk_size, n_ch), #store data in chunks of (chunk_size) time samples to make writing faster
-            compression="gzip",  #compress the data to save space
+            compression="lzf",  #compress the data to save space - gzip saves most space, lzf is the fastest
         )
 
         self.time_ds = self.f.create_dataset(   #create a time dataset in the hdf5 file
@@ -244,7 +306,7 @@ class DASProcessor:
             maxshape=(None,), #allow infinite growth
             dtype=np.float64,  #datatype, can be float64 to store precise timestamps
             chunks=(chunk_size,), #store data in chunks of (chunk_size) time samples to make writing faster
-            compression="gzip",  #compress the data to save space
+            compression="lzf",  #compress the data to save space
         )
 
     def _write(self, strain, time, multi_save):
@@ -278,12 +340,12 @@ class DASProcessor:
 
 if __name__ == "__main__":
 
-    datafolder = os.getcwd() + '/data/for_OSU/20260601'
-    savefolder = os.getcwd() + '/data/for_OSU_processed/20260601'
+    datafolder = os.getcwd() + '/data/raw_66/1400_UTC'
+    savefolder = os.getcwd() + '/data/processed_06062026/1400_UTC/'
 
     #define gauge length and sampling frequency
     gauge_length = 1.6 #meters
-    sampling_frequency = 2 #hz
+    sampling_frequency = 500 #hz
     temporal_window = 10 #minutes - similar to the moving window used in Glover et al., 2024
     #1592 channels - fiber one
 
@@ -326,23 +388,17 @@ if __name__ == "__main__":
         stop_clip = start_clip + n
 
         #process raw strain data
-        processor.process_file(rawData, time, start_clip, stop_clip, downsample=False, cutoff_frequency=5, downsample_frequency=2, multi_save=True)  #TODO: can return the last processed data to plot if wanted in the future.
+        processor.process_file(rawData, time, start_clip, stop_clip, downsample=True, cutoff_frequency=5, downsample_frequency=2, multi_save=True)
 
     processor.close()
 
 
 
-
-
-
-
-
-    #TODO: at some point it may be good to output all intermediate products like is done in the TapTest.ipynb
-
     #TODO: create a main function to run all of the above code.
 
     #TODO: are the chunk sizes when saving the hdf5 actually making it faster?
 
+    #TODO: work on multiprocessing. Right now the worker function is incorrect. Only the last file is saving. every other file gets stuck.
 
 
 

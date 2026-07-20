@@ -61,7 +61,7 @@ def decimate_data(file_path, save_dir):
     downsampled_signal = step3 #rename
 
     #downsample time to match the signal - factor of 250
-    downsampled_time = raw_time[::250]
+    downsampled_time = raw_time[::250]  #TODO: make the factor an argument - no hard code
 
     #write to hdf5 file
     write_to_hdf5(
