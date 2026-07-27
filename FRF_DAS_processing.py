@@ -115,64 +115,66 @@ def plot_timeSeries(data, channel:int):
     plt.close('all')
 
 
-def process_worker(i, all_files, savefolder):
+def process_worker(i, all_files, savefolder, downsample=False, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
 
-    gauge_length = 1.6
-    sampling_frequency = 500
-    temporal_window = 10
+    processor = None
 
-    previous_file = read_dasFile(all_files[i - 1])
-    current_file  = read_dasFile(all_files[i])
-    next_file     = read_dasFile(all_files[i + 1])
+    try:
+        gauge_length = 1.6
+        sampling_frequency = 500
+        temporal_window = 10
 
+        previous_file = read_dasFile(all_files[i - 1])
+        current_file  = read_dasFile(all_files[i])
+        next_file     = read_dasFile(all_files[i + 1])
 
-    rawData = np.vstack((
-        previous_file["RawData"],
-        current_file["RawData"],
-        next_file["RawData"]
-    ))
+        rawData = np.vstack((
+            previous_file["RawData"],
+            current_file["RawData"],
+            next_file["RawData"]
+        ))
 
-    time = np.concatenate((
-        previous_file["RawDataTime"],
-        current_file["RawDataTime"],
-        next_file["RawDataTime"]
-    ))
+        time = np.concatenate((
+            previous_file["RawDataTime"],
+            current_file["RawDataTime"],
+            next_file["RawDataTime"]
+        ))
 
-    n = current_file["RawData"].shape[0]
-    start_clip = previous_file["RawData"].shape[0]
-    stop_clip = start_clip + n
+        n = current_file["RawData"].shape[0]
+        start_clip = previous_file["RawData"].shape[0]
+        stop_clip = start_clip + n
 
-    # Release memory as soon as possible
-    del previous_file
-    del current_file
-    del next_file
+        # Release memory as soon as possible
+        del previous_file
+        del current_file
+        del next_file
 
-    processor = DASProcessor(
-        gauge_length=gauge_length,
-        sampling_frequency=sampling_frequency,
-        temporal_window=temporal_window,
-        save_path=os.path.join(savefolder, "Processed_data_")
-    )
+        processor = DASProcessor(
+            gauge_length=gauge_length,
+            sampling_frequency=sampling_frequency,
+            temporal_window=temporal_window,
+            save_path=os.path.join(savefolder, "Processed_data_")
+        )
 
+        processor.process_file(
+            rawData,
+            time,
+            start_clip,
+            stop_clip,
+            downsample=downsample,
+            cutoff_frequency=cutoff_frequency,
+            downsample_frequency=downsample_frequency,
+            multi_save=multi_save,
+        )
 
-    processor.process_file(
-        rawData,
-        time,
-        start_clip,
-        stop_clip,
-        downsample=True,
-        cutoff_frequency=5,
-        downsample_frequency=2,
-        multi_save=True,
-    )
+        del rawData
+        del time
 
-    del rawData
-    del time
+        return f"Finished File {i}"
 
-    processor.close()
-
-
-    return i
+    finally:
+        if processor is not None:
+            processor.close()
 
 
 class DASProcessor:
@@ -198,6 +200,7 @@ class DASProcessor:
         self.save_path = save_path  # output directory for saving data
         self.strain_ds = None  # strain_dataset, will hold the resizable strain dataset once initialized  #FIXME: rename to dataset - ds is confusing
         self.time_ds = None  # time_dataset, will hold the resizable time dataset once initialized
+        self.f = None
 
     def process_file(self, rawData, unix_time, start_clip, stop_clip, downsample=True, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
 
@@ -396,9 +399,7 @@ if __name__ == "__main__":
 
     #TODO: create a main function to run all of the above code.
 
-    #TODO: are the chunk sizes when saving the hdf5 actually making it faster?
-
-    #TODO: work on multiprocessing. Right now the worker function is incorrect. Only the last file is saving. every other file gets stuck.
+    #TODO: work on multiprocessing. The code is too memory intensive right now. Must be fixed to use more cores. The functions in process_file consume the most memory with copies of arrays
 
 
 

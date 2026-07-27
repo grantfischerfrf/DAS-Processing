@@ -18,16 +18,24 @@ def load_processedData(processed_data_path):
     return strain, time
 
 
-def plot_timeSeries(data, time, channel:int):
+def plot_timeSeries(file_paths, channel:int, t_start=None, t_end=None):
 
-    #plot a time series at a particular channel location
+    #plot a timeseries given a list of strain file paths.
+    fig, axes = plt.subplots(1, 1, figsize=(20, 8))
 
-    fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111)
-    ax.plot(time[:], data[:, channel])
-    ax.set_xlabel('Time (unix stamp)')
-    # ax.set_ylabel('Phase Shift (radians)')
-    ax.set_title(f'Time Series at Channel {channel}')
+    tqdm.write(f'Plotting {len(file_paths)} files...')
+    for file in tqdm(file_paths, colour='#ff5733'): #loop through all file paths
+        strain, time = load_processedData(file)
+
+        datetime_array = time2dateTime(time)  # convert unix to datetime for visualizations
+        axes.plot(datetime_array, strain[:, channel], color='blue')
+
+    axes.set_title(f'Channel {channel}: Strain magnitude v Time')
+    axes.set_ylabel('Magnitude')
+    axes.set_xlabel('Time (UTC)')
+    if t_start is not None and t_end is not None:
+        axes.set_xlim(t_start, t_end)
+    plt.savefig(f'./figures/timeseries_{channel}.png')
     plt.show()
     plt.close('all')
 
@@ -142,32 +150,32 @@ def spectrogram_plot(PSD, frequencies, time, savepath:str, channel:int, dB=False
 if __name__ == "__main__":
 
     #processed data
-    processed_data_path = os.getcwd() + '/data/processed_66/1300_UTC/Processed_data_all_files.h5'
-    strain, time = load_processedData(processed_data_path) #pull processed strain and time data
+    processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'))[0:100]
+    # strain, time = load_processedData(processed_data_paths) #pull processed strain and time data
 
-    datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
+    # datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
 
-    #define starttime and endtime for plotting
+    # define starttime and endtime for plotting
     starttime = datetime(2026, 6, 6, 0, 0, 0, tzinfo=timezone.utc)
     endtime = datetime(2026, 6, 6, 13, 5, 0, tzinfo=timezone.utc)
 
     '''CREATE WATERFALL PLOT'''
-    # savepath = './figures/20260601'
-    channel_start = 0  #define start and end channels for plotting
-    # channel_end = strain.shape[1]
-    channel_spacing=1.6 #meters
-    # waterFall(strain, datetime_array, channel_spacing, starttime, endtime, channel_start, channel_end, savepath)
-
-    filepaths = sorted(glob.glob('./data/for_OSU_processed/20260601/*.h5'), key=sequence_number)
-    count = 0
-    for file in tqdm(filepaths):
-        strain, time = load_processedData(file)
-
-        channel_end = strain.shape[1]
-
-        savepath = f'./figures/20260601/Waterfall_'
-
-        waterFall(strain, time2dateTime(time), channel_spacing, channel_start, channel_end, savepath)
+    # # savepath = './figures/20260601'
+    # channel_start = 0  #define start and end channels for plotting
+    # # channel_end = strain.shape[1]
+    # channel_spacing=1.6 #meters
+    # # waterFall(strain, datetime_array, channel_spacing, starttime, endtime, channel_start, channel_end, savepath)
+    #
+    # filepaths = sorted(glob.glob('./data/for_OSU_processed/20260601/*.h5'), key=sequence_number)
+    # count = 0
+    # for file in tqdm(filepaths):
+    #     strain, time = load_processedData(file)
+    #
+    #     channel_end = strain.shape[1]
+    #
+    #     savepath = f'./figures/20260601/Waterfall_'
+    #
+    #     waterFall(strain, time2dateTime(time), channel_spacing, channel_start, channel_end, savepath)
 
 
 
@@ -188,7 +196,17 @@ if __name__ == "__main__":
     #
     # spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
 
-    '''VISUALIZE LARC SURVEY - ORIGINAL DEPLOYMENT DATE 7/30'''
+    '''Timeseries plots'''
+    # plot_timeSeries(processed_data_paths, channel=400)
+
+    
+
+
 
 
     #TODO: normalizing the strain by the distance from shore may help with fading in the middle. Not sure if you can do this, decay in strain signal may be related nonlinearly with distance
+    #TODO: normalize by z score???
+
+    #TODO: timeseries of amplitude, then do wavenumber, then create spectra at each channel - analyze energy content - check for harmonics - see if I would need to raise the decimation.
+
+    #TODO: look at the Radar data.
