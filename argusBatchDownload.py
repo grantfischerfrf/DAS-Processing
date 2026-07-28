@@ -13,11 +13,11 @@ import concurrent.futures
 
 # --- Configuration ---
 studySite = 'FrfTower'
-camera = 'cx'
-startDate_str = '2026_6_14'
-endDate_str = '2026_6_15'
+camera = 'cxgeo'
+startDate_str = '2026_6_01'
+endDate_str = '2026_6_14'
 imageProduct = 'snap' #snap
-collectFrequency = 5  # In minutes
+collectFrequency = 0.5  # In minutes
 MAX_WORKERS = 6  # Number of parallel download threads.
 
 #Choose 'obliques' or 'orthophotos'
@@ -48,15 +48,15 @@ def generate_download_tasks(start_dt, end_dt, freq_minutes):
             if imageType.lower() == 'orthophotos':
                 url = (
                     f"https://coastalimaging.erdc.dren.mil/{studySite}/Processed/Orthophotos/{camera}/{dateString}/"
-                    f"{dateTimeString}00Z.{studySite}.{camera}.{imageProduct}.jpg"
+                    f"{dateTimeString}00Z.{studySite}.{camera}.{imageProduct}.tif"
                 )
             else:
                 url = (
                     f"https://coastalimaging.erdc.dren.mil/{studySite}/Raw/Obliques/{camera}/{dateString}/"
-                    f"{dateTimeString}00Z.{studySite}.{camera}.{imageProduct}.jpg"
+                    f"{dateTimeString}00Z.{studySite}.{camera}.{imageProduct}.tif"
                 )
 
-            saveName = f"{dateTimeString}00Z.{studySite}.{camera}.{imageProduct}.jpg"
+            saveName = f"{dateTimeString}00Z.{studySite}.{camera}.{imageProduct}.tif"
             fpath = os.path.join(outLocation, saveName)
 
             if not os.path.isfile(fpath):

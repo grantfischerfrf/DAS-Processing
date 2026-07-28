@@ -18,7 +18,7 @@ def load_processedData(processed_data_path):
     return strain, time
 
 
-def plot_timeSeries(file_paths, channel:int, t_start=None, t_end=None):
+def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=None):
 
     #plot a timeseries given a list of strain file paths.
     fig, axes = plt.subplots(1, 1, figsize=(20, 8))
@@ -30,12 +30,12 @@ def plot_timeSeries(file_paths, channel:int, t_start=None, t_end=None):
         datetime_array = time2dateTime(time)  # convert unix to datetime for visualizations
         axes.plot(datetime_array, strain[:, channel], color='blue')
 
-    axes.set_title(f'Channel {channel}: Strain magnitude v Time')
-    axes.set_ylabel('Magnitude')
+    axes.set_title(f'Channel {channel}: Strain v Time')
+    axes.set_ylabel('Strain')
     axes.set_xlabel('Time (UTC)')
     if t_start is not None and t_end is not None:
         axes.set_xlim(t_start, t_end)
-    plt.savefig(f'./figures/timeseries_{channel}.png')
+    plt.savefig(f'{save_path}/timeseries_{channel}.png')
     plt.show()
     plt.close('all')
 
@@ -146,11 +146,37 @@ def spectrogram_plot(PSD, frequencies, time, savepath:str, channel:int, dB=False
     plt.show()
     plt.close('all')
 
+def get_signal_amplitude(strain, channel: int, sampling_frequency=2):
+
+    # use the strain timeseries and welches method to get the PSD of the strain signal across frequency
+
+    # nperseg = number of samples per segment for Welch's method.
+    # Welch splits the signal into overlapping segments of this length,
+    # computes an FFT-based periodogram for each, and averages them
+    # to get a smoother, lower-variance PSD estimate.
+    #
+    # Tradeoff:
+    #   larger nperseg  -> finer frequency resolution (df = fs/nperseg), but fewer
+    #                      segments to average -> noisier PSD
+    #   smaller nperseg -> coarser frequency resolution, but more segments
+    #                      averaged -> smoother, more stable PSD
+
+    freqs, psd = welch(strain[:, channel], fs=sampling_frequency,
+                       nperseg=256)  # return psd (strain**2/Hz) and frequency bins (Hz)
+
+    wave_band = (freqs >= 0.05) & (
+                freqs <= 1)  # boolean mask of incident wave frequency band outlined in the DAS paper
+
+    Amplitude = np.sqrt(np.trapezoid(psd[wave_band], freqs[
+        wave_band]))  # integrate across the wave band to get the amplitude at the particular channel
+
+    return Amplitude
+
 
 if __name__ == "__main__":
 
     #processed data
-    processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'))[0:100]
+    processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[0:100]
     # strain, time = load_processedData(processed_data_paths) #pull processed strain and time data
 
     # datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
@@ -178,7 +204,6 @@ if __name__ == "__main__":
     #     waterFall(strain, time2dateTime(time), channel_spacing, channel_start, channel_end, savepath)
 
 
-
     '''CREATE SPECTROGRAM'''
     # savepath = './figures/spectrogram'
     #
@@ -197,9 +222,11 @@ if __name__ == "__main__":
     # spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
 
     '''Timeseries plots'''
-    # plot_timeSeries(processed_data_paths, channel=400)
+    # plot_timeSeries(processed_data_paths, save_path='./figures', channel=400)
 
-    
+
+
+
 
 
 
