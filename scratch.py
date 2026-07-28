@@ -9,131 +9,165 @@ from FRF_DAS_plots import load_processedData
 from scipy.signal import welch
 
 
+
+'''PSD plot along the channels'''
+def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, channel_spacing=1.6):
+
+    fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+
+    tqdm.write(f'Plotting {len(file_paths)} files...')
+    for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
+
+        strain, time = load_processedData(file)
+
+        N_samples, N_channels = strain.shape #get shape of the strain array
+
+        # set up grid of cross shore channels
+        channel_positions = channel_spacing * np.arange(N_channels)
+
+        #strain array of shape (t, x)
+        freqs, psd = welch(strain, fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap, axis=0)  #iterate through time, return PSD of shape (f, x)
+
+        pcm = axes.pcolormesh(channel_positions, freqs, psd[:-1, :-1], shading='auto', cmap='viridis')
+
+    cbar = plt.colorbar(pcm, ax=axes)
+    cbar.set_label("Power Spectral Density (Strain**2/Hz)")
+
+    axes.set_xlabel('Along Cable Distance (m)')
+    axes.set_ylabel('Frequency (Hz)')
+
+    plt.tight_layout()
+    plt.show()
+    plt.close('all')
+
+file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[6:12]
+nperseg = 256
+noverlap = nperseg //2
+PSD_across_channels(file_paths, nperseg, noverlap)
+
+
+
+#TODO: create a band integrated energy map
+
+#TODO: make an option to output on PSD per file initially and then one that is averaged through time. - add an option for dB scale as well.
+
+
+
 '''wave number from das data'''
-input_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[6:12]
-
-#each file contains a timeseries of strain
-strain_batch = []
-time_batch = []
-for file in input_data_paths:
-    strain, time = load_processedData(file)
-    strain_batch.append(strain)
-    time_batch.append(time)
-
-strain_batch = np.concatenate(np.array(strain_batch), axis=0) #create one large strain(t, x) array
-
-def get_signal_amplitude(strain, channel:int, sampling_frequency=2):
-
-    #use the strain timeseries and welches method to get the PSD of the strain signal across frequency
-
-    # nperseg = number of samples per segment for Welch's method.
-    # Welch splits the signal into overlapping segments of this length,
-    # computes an FFT-based periodogram for each, and averages them
-    # to get a smoother, lower-variance PSD estimate.
-    #
-    # Tradeoff:
-    #   larger nperseg  -> finer frequency resolution (df = fs/nperseg), but fewer
-    #                      segments to average -> noisier PSD
-    #   smaller nperseg -> coarser frequency resolution, but more segments
-    #                      averaged -> smoother, more stable PSD
-
-    freqs, psd = welch(strain[:, channel], fs=sampling_frequency, nperseg=256) #return psd (strain**2/Hz) and frequency bins (Hz)
-
-    wave_band = (freqs >= 0.05) & (freqs <= 1)  # boolean mask of incident wave frequency band outlined in the DAS paper
-
-    Amplitude = np.sqrt(np.trapezoid(psd[wave_band], freqs[wave_band])) #integrate across the wave band to get the amplitude at the particular channel
-
-    return Amplitude
-
-def get_waveNumber(strain, channel_start=250, channel_end=300, dx = 1.6, sampling_frequency=2, peak=True, debug=False):
-    #use real fft to pull the peak wave number from the signal. Need to preserve phase information so no PSD.
-    # real fft because we only need the positive values of the frequency spectrum (bc we only need frequencies in the wave band) - hermitian symmetry
-    strain = strain[:, channel_start:channel_end] #defaults to the cross-shore section of the cable
-
-    n_samples, n_channels = np.shape(strain) #shape of the strain array
-
-    channel_positions = dx * np.arange(n_channels) #builds the x position (in meters) of the channels
-
-    # exposed_mask = (channel_positions < 90) | (channel_positions > 160) #exposed portion of the channel
-
-    X = np.fft.rfft(strain, axis=0) #compute the real fft of the strain data along the time axis
-    freqs = np.fft.rfftfreq(n_samples, d=1/sampling_frequency) #return the discrete fourier transform sampling frequencies
-
-    wave_band = (freqs >= 0.05) & (freqs <= 1)  # boolean mask of incident wave frequency band outlined in the DAS paper
-
-    band_idx = np.where(wave_band)[0] #actual rows of X that correspond to the wave band
-
-    power_in_band = np.sum(np.abs(X[band_idx, :])**2, axis=1) #for each frequency bin within the wave band, sum up the power |X|**2 across all channels. How much energy at a particular frequency over the entire array
-
-    if debug:
-        #debugging - sanity visualization of the power spectrum
-        plt.plot(freqs[band_idx], power_in_band)
-        plt.show()
-        plt.close('all')
-
-    if peak:
-        freq_index = band_idx[np.argmax(power_in_band)] #find the frequency bin index (in the wave band) with the most energy
-
-        phi = np.angle(X[freq_index, :])  # get the phase at the one dominant frequency across all channels (phi(x))
-
-        phi_unwrapped = np.unwrap(
-            phi)  # because np.angle only returns (-pi, pi] if the phase goes past pi it jumps to -pi. This makes the sequence continuous instead
-
-        k, phi_o = np.polyfit(channel_positions, phi_unwrapped,
-                              1)  # fits a straight line -> phi(x) = kx + phi_o. Through the position (x) and unwrapped phase points (phi(x)) using least squares,
-
-    else: #take a power weighted average of all wave numbers across every frequency bin in the wave band. helps avoid problems generated by a noisy or bimodal spectrum
-        k_per_freq = []  #empty array for k's across the entire wave band
-        power_per_freq = [] #empty array for power across the entire wave band
-        for idx in band_idx:  #for frequency bins inside the wave band...
-            phi_unwrapped = np.unwrap(np.angle(X[idx, :])) # because np.angle only returns (-pi, pi] if the phase goes past pi it jumps to -pi. This makes the sequence continuous instead
-            k, phi_o = np.polyfit(channel_positions, phi_unwrapped, 1) # fits a straight line (deg=1) -> phi(x) = kx + phi_o. Through the position (x) and unwrapped phase points (phi(x)) using least squares,
-            k_per_freq.append(k) #append k to the list
-            power_per_freq.append(np.sum(np.abs(X[idx, :]) ** 2)) #append the power at the frequency bin to the list.
-
-        k_per_freq = np.array(k_per_freq)
-        power_per_freq = np.array(power_per_freq)
-
-        k = np.average(k_per_freq, weights=power_per_freq) #take the power weighted average k
-
-    if debug:
-        # residuals = actual measured phase (phi_unwrapped, from the FFT) minus the
-        # predicted phase from the linear fit (k*x + phi_o), evaluated at each channel
-        # position. Large/systematic residuals indicate the true phase isn't well
-        # described by a single constant k over this span (e.g. shoaling-driven
-        # spatial variation in k).
-        residuals = phi_unwrapped - np.polyval([k, phi_o], channel_positions) #pulls the phase (phi(x)) evaluated at each channel position, then subtract the phase from the fourier transform
-        plt.figure(figsize=(8, 4))
-        plt.scatter(channel_positions, residuals, s=15)
-        plt.axhline(0, color='k', linewidth=0.8)
-        plt.xlabel('Along Cable Distance (m)')
-        plt.ylabel('Phase residual (rad)')
-        plt.title('Residuals of linear phase fit vs. position')
-        plt.show()
-
-    # returns only the slope (Local wavenumber k). phi_o would be the y intercept.
-    #  k is estimated from a single least-squares fit across all channels at the
-    #  peak frequency (or power weighted average), rather than from point-to-point phase differences, making it
-    #  more robust to per-channel noise in the phase measurements.
-    return k
-
-amp = get_signal_amplitude(strain_batch, channel=100)
-
-k = get_waveNumber(strain_batch, peak=True)
-
-
-#TODO: make it an option to get mean or peak wavenumber
-
-
-
-
-
-
-
-
-
-
-
+# input_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[6:12]
+#
+# #each file contains a timeseries of strain
+# strain_batch = []
+# time_batch = []
+# for file in input_data_paths:
+#     strain, time = load_processedData(file)
+#     strain_batch.append(strain)
+#     time_batch.append(time)
+#
+# strain_batch = np.concatenate(np.array(strain_batch), axis=0) #create one large strain(t, x) array
+#
+# def get_signal_amplitude(strain, channel:int, sampling_frequency=2):
+#
+#     #use the strain timeseries and welches method to get the PSD of the strain signal across frequency
+#
+#     # nperseg = number of samples per segment for Welch's method.
+#     # Welch splits the signal into overlapping segments of this length,
+#     # computes an FFT-based periodogram for each, and averages them
+#     # to get a smoother, lower-variance PSD estimate.
+#     #
+#     # Tradeoff:
+#     #   larger nperseg  -> finer frequency resolution (df = fs/nperseg), but fewer
+#     #                      segments to average -> noisier PSD
+#     #   smaller nperseg -> coarser frequency resolution, but more segments
+#     #                      averaged -> smoother, more stable PSD
+#
+#     freqs, psd = welch(strain[:, channel], fs=sampling_frequency, nperseg=256) #return psd (strain**2/Hz) and frequency bins (Hz)
+#
+#     wave_band = (freqs >= 0.05) & (freqs <= 1)  # boolean mask of incident wave frequency band outlined in the DAS paper
+#
+#     Amplitude = np.sqrt(np.trapezoid(psd[wave_band], freqs[wave_band])) #integrate across the wave band to get the amplitude at the particular channel
+#
+#     return Amplitude
+#
+# def get_waveNumber(strain, channel_start=250, channel_end=300, dx = 1.6, sampling_frequency=2, peak=True, debug=False):
+#     #use real fft to pull the peak wave number from the signal. Need to preserve phase information so no PSD.
+#     # real fft because we only need the positive values of the frequency spectrum (bc we only need frequencies in the wave band) - hermitian symmetry
+#     strain = strain[:, channel_start:channel_end] #defaults to the cross-shore section of the cable
+#
+#     n_samples, n_channels = np.shape(strain) #shape of the strain array
+#
+#     channel_positions = dx * np.arange(n_channels) #builds the x position (in meters) of the channels
+#
+#     # exposed_mask = (channel_positions < 90) | (channel_positions > 160) #exposed portion of the channel
+#
+#     X = np.fft.rfft(strain, axis=0) #compute the real fft of the strain data along the time axis
+#     freqs = np.fft.rfftfreq(n_samples, d=1/sampling_frequency) #return the discrete fourier transform sampling frequencies
+#
+#     wave_band = (freqs >= 0.05) & (freqs <= 1)  # boolean mask of incident wave frequency band outlined in the DAS paper
+#
+#     band_idx = np.where(wave_band)[0] #actual rows of X that correspond to the wave band
+#
+#     power_in_band = np.sum(np.abs(X[band_idx, :])**2, axis=1) #for each frequency bin within the wave band, sum up the power |X|**2 across all channels. How much energy at a particular frequency over the entire array
+#
+#     if debug:
+#         #debugging - sanity visualization of the power spectrum
+#         plt.plot(freqs[band_idx], power_in_band)
+#         plt.show()
+#         plt.close('all')
+#
+#     if peak:
+#         freq_index = band_idx[np.argmax(power_in_band)] #find the frequency bin index (in the wave band) with the most energy
+#
+#         phi = np.angle(X[freq_index, :])  # get the phase at the one dominant frequency across all channels (phi(x))
+#
+#         phi_unwrapped = np.unwrap(
+#             phi)  # because np.angle only returns (-pi, pi] if the phase goes past pi it jumps to -pi. This makes the sequence continuous instead
+#
+#         k, phi_o = np.polyfit(channel_positions, phi_unwrapped,
+#                               1)  # fits a straight line -> phi(x) = kx + phi_o. Through the position (x) and unwrapped phase points (phi(x)) using least squares,
+#
+#     else: #take a power weighted average of all wave numbers across every frequency bin in the wave band. helps avoid problems generated by a noisy or bimodal spectrum
+#         k_per_freq = []  #empty array for k's across the entire wave band
+#         power_per_freq = [] #empty array for power across the entire wave band
+#         for idx in band_idx:  #for frequency bins inside the wave band...
+#             phi_unwrapped = np.unwrap(np.angle(X[idx, :])) # because np.angle only returns (-pi, pi] if the phase goes past pi it jumps to -pi. This makes the sequence continuous instead
+#             k, phi_o = np.polyfit(channel_positions, phi_unwrapped, 1) # fits a straight line (deg=1) -> phi(x) = kx + phi_o. Through the position (x) and unwrapped phase points (phi(x)) using least squares,
+#             k_per_freq.append(k) #append k to the list
+#             power_per_freq.append(np.sum(np.abs(X[idx, :]) ** 2)) #append the power at the frequency bin to the list.
+#
+#         k_per_freq = np.array(k_per_freq)
+#         power_per_freq = np.array(power_per_freq)
+#
+#         k = np.average(k_per_freq, weights=power_per_freq) #take the power weighted average k
+#
+#     if debug:
+#         # residuals = actual measured phase (phi_unwrapped, from the FFT) minus the
+#         # predicted phase from the linear fit (k*x + phi_o), evaluated at each channel
+#         # position. Large/systematic residuals indicate the true phase isn't well
+#         # described by a single constant k over this span (e.g. shoaling-driven
+#         # spatial variation in k). Scatter around zero gives a reasonable constant k assumption
+#         residuals = phi_unwrapped - np.polyval([k, phi_o], channel_positions) #pulls the phase (phi(x)) evaluated at each channel position, then subtract the phase from the fourier transform
+#         plt.figure(figsize=(8, 4))
+#         plt.scatter(channel_positions, residuals, s=15)
+#         plt.axhline(0, color='k', linewidth=0.8)
+#         plt.xlabel('Along Cable Distance (m)')
+#         plt.ylabel('Phase residual (rad)')
+#         plt.title('Residuals of linear phase fit vs. position')
+#         plt.show()
+#
+#     # returns only the slope (Local wavenumber k). phi_o would be the y intercept.
+#     #  k is estimated from a single least-squares fit across all channels at the
+#     #  peak frequency (or power weighted average), rather than from point-to-point phase differences, making it
+#     #  more robust to per-channel noise in the phase measurements.
+#     return k
+#
+# amp = get_signal_amplitude(strain_batch, channel=100)
+#
+# #remember this is either kx or ky depending on the orientation of the DAS cable
+# k = get_waveNumber(strain_batch, channel_start=255, channel_end=285, peak=False)
+#
+#
+# #TODO: wave number must be defined by small enough sliding windows in x - by definition the wave number is only valid locally using this math.
 
 
 '''wave and wind information and plotting'''
