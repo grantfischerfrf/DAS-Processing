@@ -248,12 +248,33 @@ def get_waveNumber(strain, channel_start=250, channel_end=300, dx = 1.6, samplin
     return k
 
 
-def psd(strain, channel, sampling_frequency, nperseg, noverlap):
+def PSD_One_Channel(file_paths, channel, nperseg, noverlap, sampling_frequency=2):
 
-    #obtain the power spectral density (and sample frequencies) of strain array
-    freqs, psd = welch(strain[:, channel], fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap)
+    #TODO: add time mask component here at some point. also make it so multiple channels can be plot on the same graph
 
-    return freqs, psd
+    tqdm.write(f'Plotting {len(file_paths)} files...')
+    for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
+        strain, time = load_processedData(file)
+
+        datetime_array = time2dateTime(time)
+        save_time = datetime_array[0]
+
+        #obtain the power spectral density (and sample frequencies) of strain array
+        freqs, psd = welch(strain[:, channel], fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap)
+
+        fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+
+        axes.plot(freqs, psd, color='red', linewidth=1)
+        axes.set_xlabel('Frequency (Hz)')
+        axes.set_ylabel('PSD (strain**2/Hz)')
+        axes.set_title(f'Power Spectral Density at Channel {channel}')
+        axes.grid()
+
+        plt.tight_layout()
+        plt.savefig(f'./figures/PSD_one_channel/{save_time.strftime("_%Y-%m-%d_%H-%M-%S")}_PSD_at_Channel_{channel}.png')
+        # plt.show()
+        plt.close('all')
+
 
 
 def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:int, channel_spacing=1.6, sampling_frequency=2):
@@ -298,7 +319,83 @@ def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:i
     plt.show()
     plt.close('all')
 
+def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, channel_spacing=1.6, averaged=False,
+                        dB=False):
 
+    tqdm.write(f'Plotting {len(file_paths)} files...')
+    psd_to_avg = []  # accumulate psd to average over
+
+    # sample file to get the shape of the strain array
+    sample_strain, sample_time = load_processedData(file_paths[0])
+
+    N_samples, N_channels = sample_strain.shape  # get shape of the strain array
+
+    # set up grid of cross shore channels
+    channel_positions = channel_spacing * np.arange(N_channels)
+
+    for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
+
+        strain, time = load_processedData(file)  # pull data
+
+        # strain array of shape (t, x)
+        freqs, psd = welch(strain, fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap,
+                           axis=0)  # iterate through time, return PSD of shape (f, x)
+
+        if averaged:
+            psd_to_avg.append(psd)
+
+        if dB:
+            psd = 10 * np.log10(psd + 1e-20)  # convert to dB avoiding log(0) - if you want the averaged plot in dB
+
+        vmin = np.percentile(psd,
+                             5)  # set the colorbar floor to a value below the 5th percentile of the data to avoid outliers dominating the color scale
+        vmax = np.percentile(psd,
+                             99.9)  # set the colorbar ceiling to a value above the 99th percentile of the data to avoid outliers dominating the color scale
+
+        if not averaged:
+            fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+            pcm = axes.pcolormesh(channel_positions, freqs, psd, shading='auto', cmap='viridis', vmin=vmin,
+                                  vmax=vmax)  # plot the average frequency content from the 5-minute file.
+            time_array = time2dateTime(time)
+            save_time = time_array[0]
+
+            cbar = fig.colorbar(pcm, ax=axes)
+            cbar.set_label("Power Spectral Density (Strain**2/Hz)")
+
+            axes.set_xlabel('Along Cable Distance (m)')
+            axes.set_ylabel('Frequency (Hz)')
+            axes.set_title(f'PSD v Channel Distance {save_time.strftime("_%Y-%m-%d_%H:%M:%S")} UTC')
+
+            plt.tight_layout()
+            plt.savefig(f'./figures/freq_dist_plots/freq_dist_{save_time.strftime("_%Y-%m-%d_%H-%M-%S")}.png')
+            # plt.show()
+            plt.close('all')
+
+    if averaged:
+        averaged_psd = np.average(psd_to_avg, axis=0)
+
+        vmin = np.percentile(averaged_psd,
+                             5)  # set the colorbar floor to a value below the 5th percentile of the data to avoid outliers dominating the color scale
+        vmax = np.percentile(averaged_psd,
+                             99.9)  # set the colorbar ceiling to a value above the 99th percentile of the data to avoid outliers dominating the color scale
+
+        fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+        pcm = axes.pcolormesh(channel_positions, freqs, averaged_psd, shading='auto', cmap='viridis', vmin=vmin,
+                              vmax=vmax)
+
+        cbar = fig.colorbar(pcm, ax=axes)
+        cbar.set_label("Power Spectral Density (Strain**2/Hz)")
+
+        axes.set_xlabel('Along Cable Distance (m)')
+        axes.set_ylabel('Frequency (Hz)')
+        axes.set_title(f'PSD v Channel Distance Averaged')
+
+        plt.tight_layout()
+        plt.savefig(f'./figures/freq_dist_plots/Averaged_freq_dist.png')
+        plt.show()
+        plt.close('all')
+
+#TODO: save path and time filter here
 
 if __name__ == "__main__":
 
@@ -332,34 +429,41 @@ if __name__ == "__main__":
 
 
     '''CREATE SPECTROGRAM'''
-    savepath = './figures/spectrogram'
-
-    #raw data
-    raw_data_path = os.getcwd() + '/data/raw_614/'
-
-    all_files = sorted(glob.glob(os.path.join(raw_data_path, '*.h5')), key=sequence_number)
-
-    channel = 400  #User input here
-
-    freqs, datetime_array_, Sxx = build_spectrogram_data(
-        all_files, channel=channel, sampling_frequency=500, nperseg=4096, noverlap=3000
-    )
-
-    spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
+    # savepath = './figures/spectrogram'
+    #
+    # #raw data
+    # raw_data_path = os.getcwd() + '/data/raw_614/'
+    #
+    # all_files = sorted(glob.glob(os.path.join(raw_data_path, '*.h5')), key=sequence_number)
+    #
+    # channel = 400  #User input here
+    #
+    # freqs, datetime_array_, Sxx = build_spectrogram_data(
+    #     all_files, channel=channel, sampling_frequency=500, nperseg=4096, noverlap=3000
+    # )
+    #
+    # spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
 
     '''TIMESERIES PLOTS'''
     # plot_timeSeries(processed_data_paths, save_path='./figures', channel=400)
 
 
     '''WAVENUMBER AND AMPLITUDE TIMESERIES AT A PARTICULAR CHANNEL'''
-    k_and_amp_timeseries(processed_data_paths, save_path='./figures', channel_start=600, channel_end=620, channel_spacing=1.6)
+    # k_and_amp_timeseries(processed_data_paths, save_path='./figures', channel_start=600, channel_end=620, channel_spacing=1.6)
 
+    '''PSD ACROSS CHANNELS'''
+    nperseg = 256
+    noverlap = nperseg // 2
+    # PSD_across_channels(processed_data_paths, nperseg, noverlap, averaged=False, dB=False)
 
+    '''PSD AT ONE CHANNEL'''
+    channel = 310
+    PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
 
     #TODO: normalizing the strain by the distance from shore may help with fading in the middle. Not sure if you can do this, decay in strain signal may be related nonlinearly with distance
     #TODO: normalize by z score???
 
-    #TODO: timeseries of amplitude, then do wavenumber, then create spectra at each channel - analyze energy content - check for harmonics - see if I would need to raise the decimation.
-
     #TODO: look at the Radar data.
+
+    #TODO: play with the sampling window for the power spectral density calculation - some data is fuzzy, maybe use log scale for IG signal?

@@ -4,52 +4,96 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
 import glob
-from FRF_DAS_processing import sequence_number
+from FRF_DAS_processing import sequence_number, time2dateTime
 from FRF_DAS_plots import load_processedData
 from scipy.signal import welch
+from tqdm import tqdm
 
 
 
 '''PSD plot along the channels'''
-def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, channel_spacing=1.6):
-
-    fig, axes = plt.subplots(1, 1, figsize=(12, 8))
-
-    tqdm.write(f'Plotting {len(file_paths)} files...')
-    for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
-
-        strain, time = load_processedData(file)
-
-        N_samples, N_channels = strain.shape #get shape of the strain array
-
-        # set up grid of cross shore channels
-        channel_positions = channel_spacing * np.arange(N_channels)
-
-        #strain array of shape (t, x)
-        freqs, psd = welch(strain, fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap, axis=0)  #iterate through time, return PSD of shape (f, x)
-
-        pcm = axes.pcolormesh(channel_positions, freqs, psd[:-1, :-1], shading='auto', cmap='viridis')
-
-    cbar = plt.colorbar(pcm, ax=axes)
-    cbar.set_label("Power Spectral Density (Strain**2/Hz)")
-
-    axes.set_xlabel('Along Cable Distance (m)')
-    axes.set_ylabel('Frequency (Hz)')
-
-    plt.tight_layout()
-    plt.show()
-    plt.close('all')
-
-file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[6:12]
-nperseg = 256
-noverlap = nperseg //2
-PSD_across_channels(file_paths, nperseg, noverlap)
+# def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, channel_spacing=1.6, averaged=False, dB=False):
+#
+#     tqdm.write(f'Plotting {len(file_paths)} files...')
+#     psd_to_avg = [] #accumulate psd to average over
+#
+#     #sample file to get the shape of the strain array
+#     sample_strain, sample_time = load_processedData(file_paths[0])
+#
+#     N_samples, N_channels = sample_strain.shape  # get shape of the strain array
+#
+#     # set up grid of cross shore channels
+#     channel_positions = channel_spacing * np.arange(N_channels)
+#
+#     for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
+#
+#         strain, time = load_processedData(file) #pull data
+#
+#         #strain array of shape (t, x)
+#         freqs, psd = welch(strain, fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap, axis=0)  #iterate through time, return PSD of shape (f, x)
+#
+#         if averaged:
+#             psd_to_avg.append(psd)
+#
+#         if dB:
+#             psd = 10 * np.log10(psd + 1e-20)  # convert to dB avoiding log(0) - if you want the averaged plot in dB
+#
+#         vmin = np.percentile(psd,
+#                              5)  # set the colorbar floor to a value below the 5th percentile of the data to avoid outliers dominating the color scale
+#         vmax = np.percentile(psd,
+#                              99.9)  # set the colorbar ceiling to a value above the 99th percentile of the data to avoid outliers dominating the color scale
+#
+#         if not averaged:
+#             fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+#             pcm = axes.pcolormesh(channel_positions, freqs, psd, shading='auto', cmap='viridis', vmin=vmin, vmax=vmax) #plot the average frequency content from the 5 minute file.
+#             time_array = time2dateTime(time)
+#             save_time = time_array[0]
+#
+#             cbar = fig.colorbar(pcm, ax=axes)
+#             cbar.set_label("Power Spectral Density (Strain**2/Hz)")
+#
+#             axes.set_xlabel('Along Cable Distance (m)')
+#             axes.set_ylabel('Frequency (Hz)')
+#             axes.set_title(f'PSD v Channel Distance {save_time.strftime("_%Y-%m-%d_%H:%M:%S")}')
+#
+#             plt.tight_layout()
+#             plt.savefig(f'./figures/freq_dist_plots/freq_dist_{save_time.strftime("_%Y-%m-%d_%H-%M-%S")}.png')
+#             # plt.show()
+#             plt.close('all')
+#
+#     if averaged:
+#         averaged_psd = np.average(psd_to_avg, axis=0)
+#
+#         vmin = np.percentile(averaged_psd,
+#                              5)  # set the colorbar floor to a value below the 5th percentile of the data to avoid outliers dominating the color scale
+#         vmax = np.percentile(averaged_psd,
+#                              99.9)  # set the colorbar ceiling to a value above the 99th percentile of the data to avoid outliers dominating the color scale
+#
+#         fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+#         pcm = axes.pcolormesh(channel_positions, freqs, averaged_psd, shading='auto', cmap='viridis', vmin=vmin, vmax=vmax)
+#
+#         cbar = fig.colorbar(pcm, ax=axes)
+#         cbar.set_label("Power Spectral Density (Strain**2/Hz)")
+#
+#         axes.set_xlabel('Along Cable Distance (m)')
+#         axes.set_ylabel('Frequency (Hz)')
+#         axes.set_title(f'PSD v Channel Distance Averaged')
+#
+#         plt.tight_layout()
+#         plt.savefig(f'./figures/freq_dist_plots/Averaged_freq_dist.png')
+#         plt.show()
+#         plt.close('all')
+#
+#
+# file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+# nperseg = 256
+# noverlap = nperseg //2
+# PSD_across_channels(file_paths, nperseg, noverlap, averaged=True, dB=False)
 
 
 
 #TODO: create a band integrated energy map
 
-#TODO: make an option to output on PSD per file initially and then one that is averaged through time. - add an option for dB scale as well.
 
 
 

@@ -26,7 +26,7 @@ if __name__ == '__main__':
     worker = partial(process_worker, all_files=all_files, savefolder=savefolder) #define a worker function for the multiprocessing
 
     with Pool(processes=6) as pool:  #loop through all the files and process with 'x' number of workers
-        for msg in tqdm(pool.imap_unordered(worker, indices), total=len(indices), colour='yellow'):  #Processes the files in an unordered manner
+        for msg in tqdm(pool.imap_unordered(worker, indices), total=len(indices), colour='yellow'):  #Processes the files in an unordered manner - can return 1, 3, 2
             pass
 
             tqdm.write(msg) #write message when one iteration is finished
