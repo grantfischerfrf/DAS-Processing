@@ -1,5 +1,5 @@
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
@@ -8,6 +8,554 @@ from FRF_DAS_processing import sequence_number, time2dateTime
 from FRF_DAS_plots import load_processedData
 from scipy.signal import welch
 from tqdm import tqdm
+from scipy.interpolate import interp1d, LinearNDInterpolator
+
+from geoprocess import ncsp2FRF
+
+def wavenumber(h, T, g=9.81):
+
+    #Solution for k using Simarro and Orfila (2013)
+    # one step correction from Newton's method applied to Beji (2013) initial guess
+    #h must be a positive quantity
+
+    #define constants
+    a = 1.09
+    b0 = 1.55
+    b1 = 1.3
+    b2 = 0.216
+    w = (2*np.pi) / T
+    uo = ((w**2) * h)/g
+
+    #solve for ub from Beji (2013)
+    ub = (uo / (np.sqrt(np.tanh(uo)))) * (1 + (uo * a) * np.exp(-1 * (b0 + (b1 * uo) + (b2 * uo**2))))
+
+    #solve for us from Simarro and Orfila (2013)
+    us = ((ub **2) + uo * (np.cosh(ub))**2) / (ub + np.sinh(ub) * np.cosh(ub)) #kh
+
+    k = us / h
+
+    return k
+
+
+def phaseSpeed(h, k, g=9.81):
+
+    #compute phase speed for intermediate water depth
+
+    return np.sqrt((g/k) * np.tanh(k * h))
+
+def n(k, h):
+    #compute group velocity factor for intermediate water depth
+
+    return 0.5 * (1 + ((2 * k * h) / (np.sinh(2 * k * h))))
+
+def groupSpeed(h, k, g=9.81):
+
+    #compute group speed for intermediate water depth
+
+    return phaseSpeed(h, k, g) * n(k, h)
+
+def shoalingCoefficient(k0, h0, k1, h1):
+
+    Cg0 = groupSpeed(h0, k0)
+
+    Cg1 = groupSpeed(h1, k1)
+
+    return np.sqrt(Cg0 / Cg1)
+
+def refractionCoefficient(theta0, theta1):
+
+    #compute refraction coefficient using snells law - assuming straight and parallel depth contours
+    #TODO: convert this to ray tracing at some point to deal with varying bathymetry in the alongshore
+
+    return np.sqrt(np.cos(theta0) / np.cos(theta1))  #ratio of cosines of the deep water and shallow water wave angles
+
+
+'''CALIBRATION COEFFICIENT'''
+#data is analyzed in 34 minute bursts on the hour.
+
+#300m cross-shore location
+data_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+data_300 = xr.open_dataset(data_path_300)
+# print(list(data_300.keys())) #list all data variables, each variable should have a time array attached to it
+
+dirspec = data_300['directionalWaveEnergyDensity'] #directional spectrum
+# PorAST = data_300['PorAST'].values #PUV or SUV mode
+gaugeDepth = data_300['gaugeDepth'] #depth from the water surface to the top of the gauge
+gaugeElevation = data_300['gaugeElevation'] #gauge vertical position in NAVD88
+bottomElevation = data_300['bottomEelevation'] #bottom vertical location from altimiter
+
+#correct for DAS data using spectral matching
+S_f_theta_eta = dirspec.values #PSD S_eta(N_samples, f, theta)
+freqs = dirspec.coords['waveFrequency'].values  #frequency bins - 0.04 - 0.4975 Hz
+dirs = dirspec.coords['waveDirectionBins'].values #direction bins - 0 - 355
+theta_rad = np.radians(dirs)  #convert to radians
+time = dirspec.coords['time'].values #719 time steps over the entire month collect - one 34 minute burst per hour - split DAS into 35 minute sections
+dtheta = np.diff(dirs)[0]  # bin width in degrees - 5
+df = np.gradient(freqs)  #frequency bin widths
+T = 1/freqs  #wave period at each frequency
+
+#load in the DAS XYZ data
+channel_grid = pd.read_pickle('./data/frf_awac/channel_grid.pkl')
+#find the channel location closest to x=300m xFRF
+x_idx = np.argmin(np.abs(channel_grid['xFRF'] - 300))
+reference_channel = channel_grid['channel'].iloc[x_idx]  #find the channel closest to 300m xFRF AWAC
+reference_depth = channel_grid['z'].iloc[x_idx]  #find the depth at the reference channel
+
+N_channels = len(channel_grid)  #number of DAS channels
+
+#clip data over timestamps
+starttime = np.datetime64(datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)) #AWAC is in UTC
+endtime = np.datetime64(datetime(2026, 6, 14, 0, 0, 0, tzinfo=timezone.utc))
+
+#time mask
+time_mask = (time > starttime) & (time < endtime)
+
+#clip arrays to be used
+S_f_theta_eta = S_f_theta_eta[time_mask, :, :] #this is in units of m**2/Hz/deg
+gaugeDepth = gaugeDepth.values[time_mask] #sensor depth using pressure
+gaugeElevation = gaugeElevation.values.item()  #the distance from the NAVD88 reference level to the top of the gauge?
+bottomElevation = bottomElevation.values[time_mask] #the elevation of the seabed in reference to NAVD88
+time = time[time_mask]  #clip time array to be used
+
+#depth from bottom to sensor
+depth_from_bottom = gaugeElevation - bottomElevation #height of sensor off the bottom of the bed
+
+#convert PSD of sea surface elevation to PSD of pressure using linear wave theory
+rho = 1025 #kg/m**3 #TODO: use equation of state to find this if you want to be more precise
+g = 9.81 #m/s**2
+
+h_awac = gaugeDepth + depth_from_bottom #full water depth
+
+#TODO: ntime is the number of 34 minute awac bursts
+ntime = 1
+
+pressure_spectrum = np.zeros((ntime, N_channels, len(freqs))) #empty array to hold the pressure spectrum at each channel
+
+C = np.zeros((ntime, N_channels))  #empty array to hold the calibration coefficient c(t, x)
+
+gamma_break = 0.43 #breaker index for random/Rayleigh-distributed wave field (Thornton & Guza, FRF-calibrated) - can use the Goda parameterization too if needed
+
+hrms_list = []#temp
+hmax_list = []#temp
+h1_list = []#temp
+
+valid_channels = 0
+
+for t in tqdm(range(ntime)):
+
+    h0 = h_awac[t] #depth at the AWAC at time t
+
+    surfaceElevation = gaugeElevation + gaugeDepth[t] #free surface elevation in NAVD88
+
+    k0 = wavenumber(h0, T) #wavenumber at the AWAC at time t
+
+    for ch in tqdm(range(N_channels), colour='green', leave=False):
+
+        #pull the DAS PSD at the current channel and time step
+
+
+        #get the depth at the current channel
+        bed = channel_grid['z'].iloc[ch]  #depth at the current channel
+
+        h1 = surfaceElevation - bed
+        h1_list.append(h1)
+
+        if h1 <= 1: #h1 must be positive for dispersion relation (wavenumber calculation) can use 1
+            continue
+
+        valid_channels += 1 #add a count for each channel that is allowed to pass through
+
+        S1_local = np.zeros((len(freqs), len(theta_rad)))
+
+        k1_arr = np.zeros(len(freqs))  #store k1 per frequency - no recomputation later
+
+        for i, f in enumerate(freqs):
+
+            k0_i = k0[i] #wavenumber at the AWAC at time t and frequency f
+
+            #compute the local wavenumber
+            k1 = wavenumber(h1, T[i])  #wavenumber at a given frequency and depth
+
+            k1_arr[i] = k1
+
+            Ks = shoalingCoefficient(k0_i, h0, k1, h1)  # compute the shoaling coefficient
+
+            for j, theta0 in enumerate(dirs):
+
+                theta0 = theta0 - 71.8535  #convert measure wave angle to xFRF shore normal convention for snells law
+                theta0 = (theta0 + 180) % 360 - 180 #wrap to -180, 180
+                theta0 = np.deg2rad(theta0) #convert to radians
+
+                if np.cos(theta0) <= 0: #skip non-shoreward propagating waves/bins
+                    continue
+
+                # AWAC directional spectrum
+                S0 = S_f_theta_eta[t, i, j]  # time index = 0 for now
+
+                #apply Snell's law to get the local wave angle at the DAS channel
+                sin_theta1 = (k0_i / k1) * np.sin(theta0)
+                if np.abs(sin_theta1) > 1:  # no physical solution
+                    continue
+
+                theta1 = np.arcsin(sin_theta1)
+
+                J = (k1 / k0_i) * (np.cos(theta1) / np.cos(theta0)) #compute the Jacobian of the transformation from (f, theta0) to (f, theta1) - this is the change in the directional spectrum due to refraction
+
+                S1 = S0 * (Ks ** 2) * J #apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared
+
+                S1_local[i, j] = S1
+
+        # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed
+        m0_per_freq = np.sum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
+        m0 = np.sum(m0_per_freq * df) #integrate over frequency to get the total variance of the sea surface elevation spectrum
+        Hrms = np.sqrt(8 * m0) #compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
+
+        Hmax = gamma_break * h1 #compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
+        hmax_list.append(Hmax)
+
+        if Hrms > Hmax:
+            scale = (Hmax / Hrms) ** 2  #compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+            S1_local = S1_local * scale  #apply the scaling factor to the spectrum
+            Hrms = Hmax  #update the Hrms to be the maximum wave height
+            hrms_list.append(Hrms)
+
+        #convert surface elevation spectrum to pressure spectrum using linear wave theory
+        for i, f in enumerate(freqs):
+
+            k1 = k1_arr[i]  #get the local wavenumber for the current frequency
+
+            Kp = 1 / np.cosh(k1 * h1)  #compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
+
+            P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  #convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
+
+            pressure_spectrum[t, ch, i] = (np.sum(P1_f) * dtheta)  #integrate over the direction bins to get a 1D spectrum
+
+    #calibration coefficient - integrate the spectra over the frequency band 0.05 to 0.3Hz
+    #c = pressure spectra / DAS spectra
+
+hrms_list = np.array(hrms_list)
+# plt.plot(channel_grid['channel'], np.max(pressure_spectrum.squeeze(), axis=1))
+plt.plot(np.arange(0, len(hrms_list)), hrms_list)
+plt.show()
+plt.close('all')
+
+
+
+
+
+
+#TODO: burst level calibration - because the AWAC only records pressure spectra for a 34 minute burst (26 minute off) - Use the AWAC generated spectra for the hour - for the entire hour of DAS.
+
+
+
+
+
+
+
+'''BUILD DAS XYZ GRID'''
+# #find the DAS channel closest to the awac and get the PSD to a 34 (35 for DAS) minute burst (average)
+# # channel = 188 #around 300m out on the cross-shore
+# # channel = 375 #aroudn 600m out on the cross-shore
+#
+# file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[0:7]
+# psds = []
+# for file in tqdm(file_paths, colour='#ff5733'):
+#
+#     strain, time = load_processedData(file)
+#
+#     N_samples, N_channels = strain.shape  #(600, 1592) #1592 channels each at 1.6m channel spacing.
+#
+#     #compute averaged PSD at a certain channel
+#     channel = 188
+#
+#     # obtain the power spectral density (and sample frequencies) of strain array
+#     freqs, psd = welch(strain[:, channel], fs=2, nperseg=256, noverlap=256//2)
+#
+#     psds.append(psd)
+#
+# #average psd
+# avg_psd = np.mean(psds, axis=0)
+#
+# #Number of channels
+# N_channels = 1592
+#
+# #length of grid in meters
+# grid_len = (N_channels * 1.6) // 2  #divide by two because the cable wraps back around on itself.
+#
+# #find where the cable lays in x FRF to match it with a depth from the larc survey.
+# larc_data_path = './data/frf_awac/FRF_geomorphology_elevationTransects_survey_20260611.nc'
+# larc_data = xr.open_dataset(larc_data_path)
+# larc_x = larc_data.xFRF.values
+# larc_y = larc_data.yFRF.values
+# profile_number = larc_data.profileNumber.values
+# time = larc_data.elevation.coords['time'].values
+# elevation = larc_data.elevation.values  #depth profile
+#
+# #plot profile
+# # plt.scatter(larc_x, larc_y, c=elevation)
+# # plt.show()
+# # plt.close('all')
+#
+# #pull just the bathymetry data along the yFRF=1000m transect
+# cross_shore_profile_mask = (profile_number==1006)
+# masked_x = larc_x[cross_shore_profile_mask]
+# masked_y = larc_y[cross_shore_profile_mask]
+# masked_elevation = elevation[cross_shore_profile_mask]
+#
+# #pull just the bathymetry data along the xFRF = 778
+# profiles = np.unique(profile_number)
+#
+# xs = []
+# ys = []
+# zs = []
+#
+# for p in profiles:
+#     mask = profile_number == p
+#
+#     idx = np.argmin(np.abs(larc_x[mask] - 778))
+#
+#     xs.append(larc_x[mask][idx])
+#     ys.append(larc_y[mask][idx])
+#     zs.append(elevation[mask][idx])
+#
+# xs = np.array(xs)  #alongshore profile
+# ys = np.array(ys)
+# zs = np.array(zs)
+#
+# #DAS survey locations
+# offshore_survey_path = './DAS_deploy/Alex_FiberLay_20250730.csv'
+#
+# offshore_survey = pd.read_csv(offshore_survey_path)
+# offshore_survey_x = offshore_survey['X']
+# offshore_survey_y = offshore_survey['Y']
+#
+# offshore_frf_x = []
+# offshore_frf_y = []
+# for x, y in zip(offshore_survey_x, offshore_survey_y):
+#     dict = ncsp2FRF(x, y)
+#     offshore_frf_x.append(dict['xFRF'])
+#     offshore_frf_y.append(dict['yFRF'])
+#
+# offshore_frf_x = np.array(offshore_frf_x)
+# offshore_frf_y = np.array(offshore_frf_y)
+#
+# dx = np.diff(offshore_frf_x)
+# dy = np.diff(offshore_frf_y)
+#
+# distance = np.sqrt(dx**2 + dy**2)
+#
+# s_survey = np.concatenate(([0], np.cumsum(distance))) #total distance along the cable in meters from the survey
+#
+# #build grid to populate - in meters
+# cable_grid = np.arange(0, grid_len, 1.6)  #1.6m channel spacing
+#
+# # interpolate outbound leg x,y from the surveyed fiber path - given a distance along the coordinate whats the x or y coordinate
+# interp_x = interp1d(s_survey, offshore_frf_x, bounds_error=False, fill_value="extrapolate")
+# interp_y = interp1d(s_survey, offshore_frf_y, bounds_error=False, fill_value="extrapolate")
+#
+# x_out = interp_x(cable_grid)
+# y_out = interp_y(cable_grid)
+#
+# # mirror for the return leg to fill out N_channels
+# n_return = N_channels - len(cable_grid)
+# x_ret = x_out[::-1][:n_return]
+# y_ret = y_out[::-1][:n_return]
+#
+# channel_x = np.concatenate([x_out, x_ret])
+# channel_y = np.concatenate([y_out, y_ret])
+# channel_number = np.arange(N_channels)
+#
+# # split channels by whether they're on the cross-shore or alongshore leg
+# cross_shore_mask = channel_x <= 750 #xFRF location where the cable should turn
+# alongshore_mask = channel_x > 750
+#
+# channel_z = np.full(N_channels, np.nan)
+#
+# # cross-shore leg: z as a function of xFRF
+# sort_idx_x = np.argsort(masked_x)
+# interp_z_crossshore = interp1d(masked_x[sort_idx_x], masked_elevation[sort_idx_x],
+#                                 bounds_error=False, fill_value="extrapolate")
+# channel_z[cross_shore_mask] = interp_z_crossshore(channel_x[cross_shore_mask])  #given an xFRF value what is the seafloor elevation here - cross-shore only
+#
+# # alongshore leg: z as a function of yFRF
+# sort_idx_y = np.argsort(ys)
+# interp_z_alongshore = interp1d(ys[sort_idx_y], zs[sort_idx_y],
+#                                 bounds_error=False, fill_value="extrapolate")
+# channel_z[alongshore_mask] = interp_z_alongshore(channel_y[alongshore_mask])  #given a yFRF value what is the seafloor elevation here - alongshore only
+#
+# channel_grid = pd.DataFrame({
+#     'channel': channel_number,
+#     'xFRF': channel_x,
+#     'yFRF': channel_y,
+#     'z': channel_z,
+# })
+#
+# # save the output grid.
+# channel_grid.to_pickle('./data/frf_awac/channel_grid.pkl')
+#TODO: need to do this for each time step
+
+# #sanity plot
+# plt.scatter(channel_grid['xFRF'], channel_grid['yFRF'], c=channel_grid['z'])
+# plt.show()
+# plt.close('all')
+
+
+
+'''AWAC PSD_eta to PSD_pd'''
+
+# #data is analyzed in 34 minute bursts on the hour.
+#
+# #300m cross-shore location
+# data_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+# data_300 = xr.open_dataset(data_path_300)
+# # print(list(data_300.keys())) #list all data variables, each variable should have a time array attached to it
+#
+# dirspec = data_300['directionalWaveEnergyDensity'] #directional spectrum
+# pwrspec = data_300['waveEnergyDensity'] #power spectral density
+# PorAST = data_300['PorAST'].values #PUV or SUV mode
+# gaugeDepth = data_300['gaugeDepth'] #depth from the water surface to the top of the gauge
+# gaugeElevation = data_300['gaugeElevation'] #gauge vertical position in NAVD88
+# bottomElevation = data_300['bottomEelevation'] #bottom vertical location from altimiter
+# nominalDepth = data_300['nominalDepth'] #deployment depth
+#
+# #correct for DAS data using spectral matching
+# S_eta = dirspec.values #PSD S_eta(N_samples, f, theta)
+# freqs = dirspec.coords['waveFrequency'].values  #frequency bins - 0.04 - 0.4975 Hz
+# dirs = dirspec.coords['waveDirectionBins'].values #direction bins - 0 - 355
+# time = dirspec.coords['time'].values #719 time steps over the entire month collect
+# dtheta = np.diff(dirs)[0]  # bin width in degrees - 5
+# T = 1/freqs  #wave period at each frequency
+#
+# #clip data over timestamps
+# starttime = np.datetime64(datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)) #AWAC is in UTC
+# endtime = np.datetime64(datetime(2026, 6, 14, 0, 0, 0, tzinfo=timezone.utc))
+#
+# #time mask
+# time_mask = (time > starttime) & (time < endtime)
+#
+# #clip arrays to be used
+# S_f_theta_eta = S_eta[time_mask, :, :]
+# gaugeDepth = gaugeDepth.values[time_mask]
+# gaugeElevation = gaugeElevation.values  #the distance from the NAVD88 reference level to the top of the gauge?
+# bottomElevation = bottomElevation.values[time_mask] #the elevation of the seabed in reference to NAVD88
+#
+# #depth from bottom to sensor
+# depth_from_bottom = gaugeElevation - bottomElevation #height of sensor off the bottom of the bed
+#
+# #convert PSD of sea surface elevation to PSD of pressure using linear wave theory
+# rho = 1025 #kg/m**3 #TODO: use equation of state to find this if you want to be more precise
+# g = 9.81 #m/s**2
+#
+# h = gaugeDepth + depth_from_bottom #full water depth
+# z = -gaugeDepth #how far below the water surface the sensor is
+#
+# #compute the wave number for each time and frequency bin
+# h_col = h[:, None] #(ntime, 1) #reshape the array to broadcast against time
+# z_col = z[:, None] # (ntime, 1)
+# k = wavenumber(h_col, T[None, :], g) #k is of shape (ntime, nfrequency)
+#
+# Kp = (np.cosh(k * (h_col + z_col))) / (np.cosh(k * h_col)) #Pressure response factor - kp  #TODO: This will need to be recalculated for each depth h (same with the wavenumber)
+#
+# #integrate the directional spectrum over the direction bins for broadcasting
+# S_f_eta = np.sum(S_f_theta_eta, axis=-1) * dtheta
+#
+# S_f_p = (rho * g)**2 * Kp**2 * S_f_eta #power spectral density of the wave induced dynamic pressure fluctuations
+# # has shape (N_time (samples), frequency bins)
+
+
+#TODO: we are given a wave directional spectrum at a certain location. First this spectrum needs to be broken down into individual components (f, theta) and shoaled/ refracted using the conservation of energy flux
+#TODO: Then integrate over directional bins to collapse to a 1d power spectrum. correct the pressure response factor for the shoaled f and h. Then create a synthetic pressure spectrum using linear theory for each location
+#TODO: repeat this process at each time.
+
+#TODO: You will need to find where each DAS channel exists in xFRF space - this is where geolocation would be nice.
+
+
+
+
+
+
+
+
+
+
+'''LARC SURVEY DATA'''
+# larc_data_path = './data/frf_awac/FRF_geomorphology_elevationTransects_survey_20260611.nc'
+# larc_data = xr.open_dataset(larc_data_path)
+# larc_x = larc_data.xFRF.values
+# larc_y = larc_data.yFRF.values
+# profile_number = larc_data.profileNumber.values
+# time = larc_data.elevation.coords['time'].values
+# elevation = larc_data.elevation.values  #depth profile
+#
+# #plot profile
+# # plt.scatter(larc_x, larc_y, c=elevation)
+# # plt.show()
+# # plt.close('all')
+#
+# #pull just the bathymetry data along the yFRF=1000m transect
+# profile_mask = (profile_number==1006)
+# masked_x = larc_x[profile_mask]
+# masked_y = larc_y[profile_mask]
+# masked_elevation = elevation[profile_mask]
+#
+# #pull just the bathymetry data along the xFRF = 778
+# profiles = np.unique(profile_number)
+#
+# xs = []
+# ys = []
+# zs = []
+#
+# for p in profiles:
+#     mask = profile_number == p
+#
+#     idx = np.argmin(np.abs(larc_x[mask] - 778))
+#
+#     xs.append(larc_x[mask][idx])
+#     ys.append(larc_y[mask][idx])
+#     zs.append(elevation[mask][idx])
+#
+# xs = np.array(xs)  #alongshore profile
+# ys = np.array(ys)
+# zs = np.array(zs)
+
+# order = np.argsort(ys)
+
+# plt.figure(figsize=(6,8))
+# plt.scatter(
+#     xs,
+#     ys,
+#     c=zs,
+#     cmap='viridis',
+#     s=40,
+# )
+#
+# plt.xlabel('xFRF (m)')
+# plt.ylabel('yFRF (m)')
+# plt.title('Nearest survey point to x = 778 for each profile')
+# plt.axis('equal')
+# plt.show()
+
+
+
+'''Dune Lidar profile'''
+# #THIS ONLY GETS THE DUNE, NOT THE NEARSHORE
+# dune_profile_path = './data/frf_awac/FRF-geomorphology_elevationTransects_duneLidarTransect_202606.nc'
+# lidar_data = xr.open_dataset(dune_profile_path)
+# lidar_x = lidar_data.xFRF.values #
+# lidar_y = lidar_data.yFRF.values
+# elevation = lidar_data.elevation.values  #depth profile
+# time = lidar_data.elevation.coords['time'].values
+#
+# fix, axes = plt.subplots(1, 1, figsize=(12, 8))
+#
+# axes.scatter(lidar_x, elevation[100])
+# # axes.invert_yaxis()
+# axes.set_xlabel('xFRF')
+# axes.set_ylabel('Elevation')
+#
+# plt.tight_layout()
+# plt.show()
+# plt.close('all')
 
 
 
@@ -89,11 +637,6 @@ from tqdm import tqdm
 # nperseg = 256
 # noverlap = nperseg //2
 # PSD_across_channels(file_paths, nperseg, noverlap, averaged=True, dB=False)
-
-
-
-#TODO: create a band integrated energy map
-
 
 
 
