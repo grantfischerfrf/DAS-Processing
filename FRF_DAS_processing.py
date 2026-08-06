@@ -86,10 +86,10 @@ def read_dasFile(file_path:str):
     return data_vars
 
 
-def phase2strain(phase_shifts, gauge_length):
+def phase2strain(phase_shifts, gauge_length=1.6):
     #use equations from Hartog 2017. Use linear theory to convert phase shifts to axial strain (Exx(t, x))
     L = 1550e-9  #wavelength of light in meters
-    psi = 0.79  #pockel's coefficient for single mode glass fiber
+    psi = 0.79  #pockel's coefficient for single mode glass fiber   #FIXME: This is outdated. keep things in phase shifts in the future
     nc = 1.46  #index of refraction for the optical fiber
 
     # strain = (L / (4 * np.pi * nc * gauge_length * psi)) * phase_shifts
@@ -97,6 +97,17 @@ def phase2strain(phase_shifts, gauge_length):
     phase_shifts *= coeff  #multiply in place to avoid the creation of a second large array
 
     return phase_shifts
+
+def strain2phase(strain, gauge_length=1.6):
+    #invert the phase2strain function to convert strain back to phase shifts
+    L = 1550e-9  #wavelength of light in meters
+    psi = 0.79  #pockel's coefficient for single mode glass fiber
+    nc = 1.46  #index of refraction for the optical fiber
+
+    coeff = np.float32(((4 * np.pi) * nc * gauge_length * psi) / L)  #cut to float32 to save memory
+    strain *= coeff  #multiply in place to avoid the creation of a second large array
+
+    return strain
 
 
 def plot_timeSeries(data, channel:int):
@@ -399,7 +410,9 @@ if __name__ == "__main__":
 
     #TODO: create a main function to run all of the above code.
 
-    #TODO: work on multiprocessing. The code is too memory intensive right now. Must be fixed to use more cores. The functions in process_file consume the most memory with copies of arrays
+    #TODO: The functions in process_file consume the most memory with copies of arrays
 
+    #TODO: work on the calibration function to sea surface elevation with data from the 8 meter array. Then analyze the signal effects with different wave energy and obliquity. burst level calibration is need for individual wave analysis
 
+    #TODO: create a band integrated energy map
 
