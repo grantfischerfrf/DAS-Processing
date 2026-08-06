@@ -111,208 +111,443 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
     return freqs, PSD
 
 
-'''CALIBRATION COEFFICIENT'''
-#data is analyzed in 34 minute bursts on the hour.
-
-#PULL AWAC DATA
-
-#300m cross-shore location  #TODO: add in the 600m awac as well. The spectrum generated from the awacs should shoal together to an equivalent spectra in between the two.
-data_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
-S_f_theta_eta, awac_freqs, dirs, p_time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(data_path_300)
-
-
-#load in the DAS XYZ data
-channel_grid = pd.read_pickle('./data/frf_awac/channel_grid.pkl')
-#find the channel location closest to x=300m xFRF
-x_idx = np.argmin(np.abs(channel_grid['xFRF'] - 300))
-reference_channel = channel_grid['channel'].iloc[x_idx]  #find the channel closest to 300m xFRF AWAC
-reference_depth = channel_grid['z'].iloc[x_idx]  #find the depth at the reference channel
-N_channels = len(channel_grid)  #number of DAS channels
-
-
-#convert PSD of sea surface elevation to PSD of pressure using linear wave theory
-rho = 1025 #kg/m**3 #TODO: use equation of state to find this if you want to be more precise
-g = 9.81 #m/s**2
-
-#LOOP FOR CALIBRATION COEFFICIENTS
-processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-N_files = len(processed_data_paths)  #number of processed DAS files
-
-pressure_spectrum = np.zeros((N_files, N_channels, len(awac_freqs))) #empty array to hold the pressure spectrum at each channel
-
-gamma_break = 0.43 #breaker index for random/Rayleigh-distributed wave field (Thornton & Guza, FRF-calibrated) - can use the Goda parameterization too if needed
-
-m0_list = []#temp
-h1_list = []#temp
-
-valid_channels = 0
-
-print('Calculating Calibration Coefficients ...')
-for t in tqdm(range(N_files), colour='#ff5733'):
-
-    C = np.zeros(N_channels)  # empty array to hold the calibration coefficient c(t, x)
-
-    #find the starttime of the Das file
-    match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})', processed_data_paths[t])  # extract the timestamp from the first file name
-    timestamp = None
-    if match:
-        timestamp = match.group(1)  # pull the timestamp from the regex object
-    else:
-        print(f"No timestamp found in file name: {processed_data_paths[t]}") #break the loop and inspect file names instead
-        break
-
-    das_start_time = np.datetime64(datetime.strptime(timestamp, '%Y_%m_%d_%H_%M_%S'))  # starttime of the file
-    das_end_time = np.datetime64(das_start_time + timedelta(minutes=5))  # endtime of the file
-
-    # closest AWAC burst
-    idx = np.argmin(np.abs(p_time - das_start_time))
-
-    awac_start_time = p_time[idx]
-
-    awac_end_time = awac_start_time + np.timedelta64(34, 'm')  # AWAC burst is 34 minutes long - this line isn't super necessary but here for consistency
-
-    offset = np.abs(das_start_time - awac_start_time)
-    # print(
-    #     "das_file:" file,
-    #     "das_time:" das_start,
-    #     "awac_time:" awac_time,
-    #     "offset:" offset
-    # )
-
-    #clip the AWAC data based on the respective start and end time
-    time_mask = (p_time >= awac_start_time) & (p_time <= awac_end_time)
-    S_f_theta_eta_masked = S_f_theta_eta[time_mask, :, :] #this is in units of m**2/Hz/deg
-    gaugeDepth_masked = gaugeDepth.values[time_mask] #sensor depth using pressure
-    gaugeElevation_value = gaugeElevation.values.item()  #the distance from the NAVD88 reference level to the top of the gauge?
-    bottomElevation_masked = bottomElevation.values[time_mask] #the elevation of the seabed in reference to NAVD88
-    p_time_masked = p_time[time_mask]  #clip time array to be used
-
-    # depth from bottom to sensor
-    depth_from_bottom = gaugeElevation_value - bottomElevation_masked #height of sensor off the bottom of the bed - array
-    h_awac = gaugeDepth_masked + depth_from_bottom #full water depth - array
-
-    S_f_theta_eta_selected = S_f_theta_eta[idx] #select the AWAC burst closest to the DAS file start time - squeeze extra time dimension (1, 62, 72) -> shape (62, 72)
-
-    h0 = h_awac.item() #reference depth at the AWAC at time t - [number] use .item to pull out
-
-    surfaceElevation = gaugeElevation_value + gaugeDepth_masked.item() #free surface elevation in NAVD88
-
-    k0 = wavenumber(h0, T) #wavenumber at the AWAC at time t
-
-    for ch in tqdm(range(N_channels), colour='green', leave=False):
-
-        #skip the first ~100 channels of the DAS cable, there is no signal there  #TODO: May need to do this to keep the calibration factor valid.
-        # if ch < 120 or ch > N_channels - 120:
-        #     continue
-
-        #pull the DAS PSD at the current channel and time step
-        das_freqs, das_PSD = get_DAS_PSD(processed_data_paths[t], ch, nperseg=256, sampling_frequency=2)  #this is in units of m**2/Hz
-        #TODO: probably will need to average the PSD for the 35 minute burst.
-
-        #get the depth at the current channel
-        bed = channel_grid['z'].iloc[ch]  #depth at the current channel
-
-        h1 = surfaceElevation - bed
-
-        h1_list.append(h1)
-
-        if h1 <= 0: #h1 must be positive for dispersion relation (wavenumber calculation) can use 1
-            continue
-
-        valid_channels += 1 #add a count for each channel that is allowed to pass through
-
-        S1_local = np.zeros((len(awac_freqs), len(dirs)))
-
-        k1_arr = np.zeros(len(awac_freqs))  #store k1 per frequency - no recomputation later
-
-        for i, f in enumerate(awac_freqs):
-
-            k0_i = k0[i] #wavenumber at the AWAC at time t and frequency f
-
-            #compute the local wavenumber
-            k1 = wavenumber(h1, T[i])  #wavenumber at a given frequency and depth
-
-            k1_arr[i] = k1
-
-            Ks = shoalingCoefficient(k0_i, h0, k1, h1)  # compute the shoaling coefficient
-
-            for j, theta0 in enumerate(dirs):
-
-                theta0 = theta0 - 71.8535  #convert measure wave angle to xFRF shore normal convention for snells law
-                theta0 = (theta0 + 180) % 360 - 180 #wrap to -180, 180
-
-                if np.abs(theta0) >= 75:  #skip waves that are too oblique to xFRF. Causes the jacobian to converge to a singularity - very large values directional bins that shouldn't have a lot of energy
-                    continue
-
-                theta0 = np.deg2rad(theta0) #convert to radians
-
-                if np.cos(theta0) <= 0: #skip non-shoreward propagating waves/bins
-                    continue
-
-                # AWAC directional spectrum
-                S0 = S_f_theta_eta_selected[i, j]
-
-                #apply Snell's law to get the local wave angle at the DAS channel
-                sin_theta1 = (k0_i / k1) * np.sin(theta0)
-                if np.abs(sin_theta1) > 1:  # no physical solution
-                    continue
-
-                theta1 = np.arcsin(sin_theta1)
-
-                J = np.abs((k1 / k0_i) * (np.cos(theta1) / np.cos(theta0))) #compute the Jacobian of the transformation from (f, theta0) to (f, theta1) - this is the change in the directional spectrum due to refraction
-                #absolute value is used because the energy flux is always positive, but the Jacobian can be negative for certain angles. The absolute value ensures that we are only considering the magnitude of the change in the directional spectrum.
-                #this will blow up if theta0 is close to 90 degrees - currently skipping those angles
-
-                # if J > 20:
-                #     print(np.rad2deg(theta0), J, S0)
-                #     J_list.append(J)
-                #     S0_list.append(S0)
-
-                S1 = S0 * (Ks ** 2) * J #apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
-
-                S1_local[i, j] = S1  #shape(n_freq, n_dir) - store the local spectrum for this frequency and direction
-
-        # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed
-        m0_per_freq = np.sum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
-        m0 = np.sum(m0_per_freq * df) #integrate over frequency to get the total variance of the sea surface elevation spectrum
-
-        Hrms = np.sqrt(8 * m0) #compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
-
-        Hmax = gamma_break * h1 #compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
-
-        if Hrms > Hmax:
-
-            scale = (Hmax / Hrms) ** 2  #compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
-            S1_local = S1_local * scale  #apply the scaling factor to the spectrum
-
-        #convert surface elevation spectrum to pressure spectrum using linear wave theory
-        for i, f in enumerate(awac_freqs):
-
-            k1 = k1_arr[i]  #get the local wavenumber for the current frequency
-
-            Kp = 1 / np.cosh(k1 * h1)  #compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
-
-            P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  #convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
-
-            pressure_spectrum[t, ch, i] = (np.sum(P1_f) * dtheta)  #integrate over the direction bins to get a 1D spectrum
-
-        #comput the calibration coefficient at each channel
-        #first integrate both the DAS PSD and AWAC PSD over the desired wave band
-        das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3) #wave band defined over the das PSD frequency bins
-        awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <=0.3)
-        das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band]) #integrated power spectral density of the DAS
-        awac_psd_variance = np.trapezoid(pressure_spectrum[t, ch, awac_wave_band], awac_freqs[awac_wave_band]) #integrated power spectral density of the AWAC
-
-        if das_psd_variance <= 0:  #if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
-            C[ch] = np.nan
-            continue
-
-        calibration_coefficient = awac_psd_variance / das_psd_variance #compute the calibration coefficient as the ratio of the integrated AWAC PSD over the integrated DAS PSD
-        C[ch] = calibration_coefficient #store the coefficient for this time and channel
-
-    # save the calibration coefficients
-    np.save(f'./data/frf_awac/calibration_coefficients/CalibCoeff_{das_start_time.tolist().strftime("_%Y-%m-%d_%H:%M:%S")}', C)
-    tqdm.write(f'Saved calibration coefficient for {das_start_time.tolist().strftime("%Y-%m-%d %H:%M:%S")}')
+'''CALIBRATION COEFFICIENT original version'''
+# #data is analyzed in 34 minute bursts on the hour.
+#
+# #PULL AWAC DATA
+#
+# #300m cross-shore location  #TODO: add in the 600m awac as well. The spectrum generated from the awacs should shoal together to an equivalent spectra in between the two.
+# data_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+# S_f_theta_eta, awac_freqs, dirs, p_time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(data_path_300)
+#
+#
+# #load in the DAS XYZ data
+# channel_grid = pd.read_pickle('./data/frf_awac/channel_grid.pkl')
+# #find the channel location closest to x=300m xFRF
+# x_idx = np.argmin(np.abs(channel_grid['xFRF'] - 300))
+# reference_channel = channel_grid['channel'].iloc[x_idx]  #find the channel closest to 300m xFRF AWAC
+# reference_depth = channel_grid['z'].iloc[x_idx]  #find the depth at the reference channel
+# N_channels = len(channel_grid)  #number of DAS channels
+#
+#
+# #convert PSD of sea surface elevation to PSD of pressure using linear wave theory
+# rho = 1025 #kg/m**3 #TODO: use equation of state to find this if you want to be more precise
+# g = 9.81 #m/s**2
+#
+# #LOOP FOR CALIBRATION COEFFICIENTS
+# processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+# N_files = len(processed_data_paths)  #number of processed DAS files
+#
+# pressure_spectrum = np.zeros((N_files, N_channels, len(awac_freqs))) #empty array to hold the pressure spectrum at each channel
+#
+# gamma_break = 0.43 #breaker index for random/Rayleigh-distributed wave field (Thornton & Guza, FRF-calibrated) - can use the Goda parameterization too if needed
+#
+# m0_list = []#temp
+# h1_list = []#temp
+#
+# valid_channels = 0
+#
+# print('Calculating Calibration Coefficients ...')
+# for t in tqdm(range(N_files), colour='#ff5733'):
+#
+#     C = np.zeros(N_channels)  # empty array to hold the calibration coefficient c(t, x)
+#
+#     #find the starttime of the Das file
+#     match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})', processed_data_paths[t])  # extract the timestamp from the first file name
+#     timestamp = None
+#     if match:
+#         timestamp = match.group(1)  # pull the timestamp from the regex object
+#     else:
+#         print(f"No timestamp found in file name: {processed_data_paths[t]}") #break the loop and inspect file names instead
+#         break
+#
+#     das_start_time = np.datetime64(datetime.strptime(timestamp, '%Y_%m_%d_%H_%M_%S'))  # starttime of the file
+#     das_end_time = np.datetime64(das_start_time + timedelta(minutes=5))  # endtime of the file
+#
+#     # closest AWAC burst
+#     idx = np.argmin(np.abs(p_time - das_start_time))
+#
+#     awac_start_time = p_time[idx]
+#
+#     awac_end_time = awac_start_time + np.timedelta64(34, 'm')  # AWAC burst is 34 minutes long - this line isn't super necessary but here for consistency
+#
+#     offset = np.abs(das_start_time - awac_start_time)
+#     # print(
+#     #     "das_file:" file,
+#     #     "das_time:" das_start,
+#     #     "awac_time:" awac_time,
+#     #     "offset:" offset
+#     # )
+#
+#     #clip the AWAC data based on the respective start and end time
+#     time_mask = (p_time >= awac_start_time) & (p_time <= awac_end_time)
+#     S_f_theta_eta_masked = S_f_theta_eta[time_mask, :, :] #this is in units of m**2/Hz/deg
+#     gaugeDepth_masked = gaugeDepth.values[time_mask] #sensor depth using pressure
+#     gaugeElevation_value = gaugeElevation.values.item()  #the distance from the NAVD88 reference level to the top of the gauge?
+#     bottomElevation_masked = bottomElevation.values[time_mask] #the elevation of the seabed in reference to NAVD88
+#     p_time_masked = p_time[time_mask]  #clip time array to be used
+#
+#     # depth from bottom to sensor
+#     depth_from_bottom = gaugeElevation_value - bottomElevation_masked #height of sensor off the bottom of the bed - array
+#     h_awac = gaugeDepth_masked + depth_from_bottom #full water depth - array
+#
+#     S_f_theta_eta_selected = S_f_theta_eta[idx] #select the AWAC burst closest to the DAS file start time - squeeze extra time dimension (1, 62, 72) -> shape (62, 72)
+#
+#     h0 = h_awac.item() #reference depth at the AWAC at time t - [number] use .item to pull out
+#
+#     surfaceElevation = gaugeElevation_value + gaugeDepth_masked.item() #free surface elevation in NAVD88
+#
+#     k0 = wavenumber(h0, T) #wavenumber at the AWAC at time t
+#
+#     for ch in tqdm(range(N_channels), colour='green', leave=False):
+#
+#         #skip the first ~100 channels of the DAS cable, there is no signal there  #TODO: May need to do this to keep the calibration factor valid.
+#         # if ch < 120 or ch > N_channels - 120:
+#         #     continue
+#
+#         #pull the DAS PSD at the current channel and time step
+#         das_freqs, das_PSD = get_DAS_PSD(processed_data_paths[t], ch, nperseg=256, sampling_frequency=2)  #this is in units of m**2/Hz
+#         #TODO: probably will need to average the PSD for the 35 minute burst.
+#
+#         #get the depth at the current channel
+#         bed = channel_grid['z'].iloc[ch]  #depth at the current channel
+#
+#         h1 = surfaceElevation - bed
+#
+#         h1_list.append(h1)
+#
+#         if h1 <= 0: #h1 must be positive for dispersion relation (wavenumber calculation) can use 1
+#             continue
+#
+#         valid_channels += 1 #add a count for each channel that is allowed to pass through
+#
+#         S1_local = np.zeros((len(awac_freqs), len(dirs)))
+#
+#         k1_arr = np.zeros(len(awac_freqs))  #store k1 per frequency - no recomputation later
+#
+#         for i, f in enumerate(awac_freqs):
+#
+#             k0_i = k0[i] #wavenumber at the AWAC at time t and frequency f
+#
+#             #compute the local wavenumber
+#             k1 = wavenumber(h1, T[i])  #wavenumber at a given frequency and depth
+#
+#             k1_arr[i] = k1
+#
+#             Ks = shoalingCoefficient(k0_i, h0, k1, h1)  # compute the shoaling coefficient
+#
+#             for j, theta0 in enumerate(dirs):
+#
+#                 theta0 = theta0 - 71.8535  #convert measure wave angle to xFRF shore normal convention for snells law
+#                 theta0 = (theta0 + 180) % 360 - 180 #wrap to -180, 180
+#
+#                 if np.abs(theta0) >= 75:  #skip waves that are too oblique to xFRF. Causes the jacobian to converge to a singularity - very large values directional bins that shouldn't have a lot of energy
+#                     continue
+#
+#                 theta0 = np.deg2rad(theta0) #convert to radians
+#
+#                 if np.cos(theta0) <= 0: #skip non-shoreward propagating waves/bins
+#                     continue
+#
+#                 # AWAC directional spectrum
+#                 S0 = S_f_theta_eta_selected[i, j]
+#
+#                 #apply Snell's law to get the local wave angle at the DAS channel
+#                 sin_theta1 = (k0_i / k1) * np.sin(theta0)
+#                 if np.abs(sin_theta1) > 1:  # no physical solution
+#                     continue
+#
+#                 theta1 = np.arcsin(sin_theta1)
+#
+#                 J = np.abs((k1 / k0_i) * (np.cos(theta1) / np.cos(theta0))) #compute the Jacobian of the transformation from (f, theta0) to (f, theta1) - this is the change in the directional spectrum due to refraction
+#                 #absolute value is used because the energy flux is always positive, but the Jacobian can be negative for certain angles. The absolute value ensures that we are only considering the magnitude of the change in the directional spectrum.
+#                 #this will blow up if theta0 is close to 90 degrees - currently skipping those angles
+#
+#                 # if J > 20:
+#                 #     print(np.rad2deg(theta0), J, S0)
+#                 #     J_list.append(J)
+#                 #     S0_list.append(S0)
+#
+#                 S1 = S0 * (Ks ** 2) * J #apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
+#
+#                 S1_local[i, j] = S1  #shape(n_freq, n_dir) - store the local spectrum for this frequency and direction
+#
+#         # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed
+#         m0_per_freq = np.sum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
+#         m0 = np.sum(m0_per_freq * df) #integrate over frequency to get the total variance of the sea surface elevation spectrum
+#
+#         Hrms = np.sqrt(8 * m0) #compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
+#
+#         Hmax = gamma_break * h1 #compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
+#
+#         if Hrms > Hmax:
+#
+#             scale = (Hmax / Hrms) ** 2  #compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+#             S1_local = S1_local * scale  #apply the scaling factor to the spectrum
+#
+#         #convert surface elevation spectrum to pressure spectrum using linear wave theory
+#         for i, f in enumerate(awac_freqs):
+#
+#             k1 = k1_arr[i]  #get the local wavenumber for the current frequency
+#
+#             Kp = 1 / np.cosh(k1 * h1)  #compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
+#
+#             P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  #convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
+#
+#             pressure_spectrum[t, ch, i] = (np.sum(P1_f) * dtheta)  #integrate over the direction bins to get a 1D spectrum
+#
+#         #comput the calibration coefficient at each channel
+#         #first integrate both the DAS PSD and AWAC PSD over the desired wave band
+#         das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3) #wave band defined over the das PSD frequency bins
+#         awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <=0.3)
+#         das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band]) #integrated power spectral density of the DAS
+#         awac_psd_variance = np.trapezoid(pressure_spectrum[t, ch, awac_wave_band], awac_freqs[awac_wave_band]) #integrated power spectral density of the AWAC
+#
+#         if das_psd_variance <= 0:  #if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
+#             C[ch] = np.nan
+#             continue
+#
+#         calibration_coefficient = awac_psd_variance / das_psd_variance #compute the calibration coefficient as the ratio of the integrated AWAC PSD over the integrated DAS PSD
+#         C[ch] = calibration_coefficient #store the coefficient for this time and channel
+#
+#     # save the calibration coefficients
+#     np.save(f'./data/frf_awac/calibration_coefficients/CalibCoeff_{das_start_time.tolist().strftime("_%Y-%m-%d_%H:%M:%S")}', C)
+#     tqdm.write(f'Saved calibration coefficient for {das_start_time.tolist().strftime("%Y-%m-%d %H:%M:%S")}')
+#
+#         #SANITY CHECK
+#         # # derive Hrms from corrected S1_local
+#         # m0_local_freq = np.sum(S1_local * dtheta,
+#         #                        axis=1)  # integrate over direction to get the variance of the sea surface elevation spectrum at this frequency
+#         # m0_local = np.sum(m0_local_freq * df)
+#         # Hrms_local = np.sqrt(
+#         #     8 * m0_local)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
+#         # m0_list.append(Hrms_local)
+
+# #SANITY CHECK
+# # # plt.plot(channel_grid['channel'], np.median(pressure_spectrum.squeeze(), axis=1))
+# # # plt.plot(np.arange(len(h1_list)), h1_list)
+# # plt.plot(np.arange(len(m0_list)), m0_list)
+# # plt.xlabel('channel number')
+# # plt.ylabel('Hrms (m)')
+# # plt.title('Hrms derived from corrected Directional Spectra at each DAS channel')
+# # plt.show()
+# # plt.close('all')
+
+
+'''CALIBRATION COEFFICIENT FASTER VERSION - NO MULTIPROCESSING'''
+
+# '''CALIBRATION COEFFICIENT'''
+# #data is analyzed in 34 minute bursts on the hour.
+#
+# #PULL AWAC DATA
+#
+# #300m cross-shore location  #TODO: add in the 600m awac as well. Have it split at a certain channel the two - switch from calibration with 300 to 600. The attenuated spectra from both instruments should be equal at this range.
+# data_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+# S_f_theta_eta, awac_freqs, dirs, p_time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(data_path_300)
+#
+# #load in the DAS XYZ data
+# channel_grid = pd.read_pickle('./data/frf_awac/channel_grid.pkl')
+# #find the channel location closest to x=300m xFRF
+# x_idx = np.argmin(np.abs(channel_grid['xFRF'] - 300))
+# reference_channel = channel_grid['channel'].iloc[x_idx]  #find the channel closest to 300m xFRF AWAC
+# reference_depth = channel_grid['z'].iloc[x_idx]  #find the depth at the reference channel
+# N_channels = len(channel_grid)  #number of DAS channels
+#
+# #convert PSD of sea surface elevation to PSD of pressure using linear wave theory
+# rho = 1025 #kg/m**3 #TODO: use equation of state to find this if you want to be more precise
+# g = 9.81 #m/s**2
+#
+# #LOOP FOR CALIBRATION COEFFICIENTS
+# processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+# N_files = len(processed_data_paths)  #number of processed DAS files
+#
+# pressure_spectrum = np.zeros((N_files, N_channels, len(awac_freqs))) #empty array to hold the pressure spectrum at each channel
+#
+# #precompute trig functions for wave refraction
+# theta0_deg = dirs - 71.8535   #convert measure wave angle to xFRF shore normal convention for snells law
+# theta0_deg = (theta0_deg + 180) % 360 - 180 #wrap to -180, 180
+#
+# valid_theta = (  #skip waves that are too oblique to xFRF. Causes the jacobian to converge to a singularity - very large values directional bins that shouldn't have a lot of energy
+#     (np.abs(theta0_deg) < 75) &
+#     (np.cos(np.deg2rad(theta0_deg)) > 0)  #skip non-shoreward propagating waves/bins
+# )
+#
+# theta0_rad = np.deg2rad(theta0_deg) #convert to radians
+# cos_theta0 = np.cos(theta0_rad)  #precomputation of cos(theta0)
+# sin_theta0 = np.sin(theta0_rad)  #precomputation of sin(theta0)
+#
+# gamma_break = 0.43 #breaker index for random/Rayleigh-distributed wave field (Thornton & Guza, FRF-calibrated) - can use the Goda parameterization too if needed
+#
+# m0_list = []#temp
+# h1_list = []#temp
+#
+# valid_channels = 0
+#
+# print('Calculating Calibration Coefficients ...')
+# for t in tqdm(range(N_files), colour='#ff5733'):
+#
+#     C = np.zeros(N_channels)  # empty array to hold the calibration coefficient c(t, x)
+#
+#     #find the starttime of the Das file
+#     match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})', processed_data_paths[t])  # extract the timestamp from the first file name
+#     timestamp = None
+#     if match:
+#         timestamp = match.group(1)  # pull the timestamp from the regex object
+#     else:
+#         print(f"No timestamp found in file name: {processed_data_paths[t]}") #break the loop and inspect file names instead
+#         break
+#
+#     das_start_time = np.datetime64(datetime.strptime(timestamp, '%Y_%m_%d_%H_%M_%S'))  # starttime of the file
+#     das_end_time = np.datetime64(das_start_time + timedelta(minutes=5))  # endtime of the file
+#
+#     #pull the DAS PSD for the appropriate file
+#     das_freqs, das_PSD_all_channels = get_DAS_PSD(processed_data_paths[t], nperseg=256, sampling_frequency=2)  # this is in units of m**2/Hz
+#
+#     # closest AWAC burst
+#     idx = np.argmin(np.abs(p_time - das_start_time))
+#
+#     awac_start_time = p_time[idx]
+#
+#     awac_end_time = awac_start_time + np.timedelta64(34, 'm')  # AWAC burst is 34 minutes long - this line isn't super necessary but here for consistency
+#
+#     offset = np.abs(das_start_time - awac_start_time)
+#     # print(
+#     #     "das_file:" file,
+#     #     "das_time:" das_start,
+#     #     "awac_time:" awac_time,
+#     #     "offset:" offset
+#     # )
+#
+#     #clip the AWAC data based on the respective start and end time
+#     time_mask = (p_time >= awac_start_time) & (p_time <= awac_end_time)
+#     S_f_theta_eta_masked = S_f_theta_eta[time_mask, :, :] #this is in units of m**2/Hz/deg
+#     gaugeDepth_masked = gaugeDepth.values[time_mask] #sensor depth using pressure
+#     gaugeElevation_value = gaugeElevation.values.item()  #the distance from the NAVD88 reference level to the top of the gauge?
+#     bottomElevation_masked = bottomElevation.values[time_mask] #the elevation of the seabed in reference to NAVD88
+#     p_time_masked = p_time[time_mask]  #clip time array to be used
+#
+#     # depth from bottom to sensor
+#     depth_from_bottom = gaugeElevation_value - bottomElevation_masked #height of sensor off the bottom of the bed - array
+#     h_awac = gaugeDepth_masked + depth_from_bottom #full water depth - array
+#
+#     S_f_theta_eta_selected = S_f_theta_eta[idx] #select the AWAC burst closest to the DAS file start time - squeeze extra time dimension (1, 62, 72) -> shape (62, 72)
+#
+#     h0 = h_awac.item() #reference depth at the AWAC at time t - [number] use .item to pull out
+#
+#     surfaceElevation = gaugeElevation_value + gaugeDepth_masked.item() #free surface elevation in NAVD88
+#
+#     k0 = wavenumber(h0, T) #wavenumber at the AWAC at time t
+#
+#     #get the depth across all channels
+#     bed = channel_grid['z'].values  #depth at all channels
+#
+#     for ch in tqdm(range(N_channels), colour='green', leave=False):
+#
+#         #skip the first ~100 channels of the DAS cable, there is no signal there  #TODO: May need to do this to keep the calibration factor valid.
+#         # if ch < 120 or ch > N_channels - 120:
+#         #     continue
+#
+#         #pull the DAS PSD at the current channel and time step
+#         das_PSD = das_PSD_all_channels[:, ch]
+#         #TODO: probably will need to average the PSD for the 35 minute burst.
+#
+#         h1 = surfaceElevation - bed[ch]
+#
+#         h1_list.append(h1)
+#
+#         if h1 <= 0: #h1 must be positive for dispersion relation (wavenumber calculation) can use 1
+#             continue
+#
+#         valid_channels += 1 #add a count for each channel that is allowed to pass through
+#
+#         S1_local = np.zeros((len(awac_freqs), len(dirs)))
+#
+#         k1_arr = np.zeros(len(awac_freqs))  #store k1 per frequency - no recomputation later
+#
+#         for i, f in enumerate(awac_freqs):
+#
+#             k0_i = k0[i] #wavenumber at the AWAC at time t and frequency f
+#
+#             #compute the local wavenumber
+#             k1 = wavenumber(h1, T[i])  #wavenumber at a given frequency and depth
+#
+#             k1_arr[i] = k1
+#
+#             Ks = shoalingCoefficient(k0_i, h0, k1, h1)  # compute the shoaling coefficient
+#
+#             for j in range(len(dirs)):
+#
+#                 if not valid_theta[j]:
+#                     continue
+#
+#                 theta0 = theta0_rad[j]
+#
+#                 #apply Snell's law to get the local wave angle at the DAS channel
+#                 sin_theta1 = (k0_i / k1) * sin_theta0[j]
+#
+#                 # AWAC directional spectrum
+#                 S0 = S_f_theta_eta_selected[i, j]
+#
+#                 # sin_theta1 = (k0_i / k1) * np.sin(theta0)
+#                 if np.abs(sin_theta1) > 1:  # no physical solution
+#                     continue
+#
+#                 theta1 = np.arcsin(sin_theta1)
+#
+#                 J = np.abs((k1 / k0_i) * (np.cos(theta1) / cos_theta0[j])) #compute the Jacobian of the transformation from (f, theta0) to (f, theta1) - this is the change in the directional spectrum due to refraction
+#                 #absolute value is used because the energy flux is always positive, but the Jacobian can be negative for certain angles. The absolute value ensures that we are only considering the magnitude of the change in the directional spectrum.
+#                 #this will blow up if theta0 is close to 90 degrees - currently skipping those angles
+#
+#                 # if J > 20:
+#                 #     print(np.rad2deg(theta0), J, S0)
+#                 #     J_list.append(J)
+#                 #     S0_list.append(S0)
+#
+#                 S1 = S0 * (Ks ** 2) * J #apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
+#
+#                 S1_local[i, j] = S1  #shape(n_freq, n_dir) - store the local spectrum for this frequency and direction
+#
+#         # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed
+#         m0_per_freq = np.sum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
+#         m0 = np.sum(m0_per_freq * df) #integrate over frequency to get the total variance of the sea surface elevation spectrum
+#
+#         Hrms = np.sqrt(8 * m0) #compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
+#
+#         Hmax = gamma_break * h1 #compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
+#
+#         if Hrms > Hmax:
+#
+#             scale = (Hmax / Hrms) ** 2  #compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+#             S1_local = S1_local * scale  #apply the scaling factor to the spectrum
+#
+#         #convert surface elevation spectrum to pressure spectrum using linear wave theory
+#         for i, f in enumerate(awac_freqs):
+#
+#             k1 = k1_arr[i]  #get the local wavenumber for the current frequency
+#
+#             Kp = 1 / np.cosh(k1 * h1)  #compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
+#
+#             P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  #convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
+#
+#             pressure_spectrum[t, ch, i] = (np.sum(P1_f) * dtheta)  #integrate over the direction bins to get a 1D spectrum
+#
+#         #comput the calibration coefficient at each channel
+#         #first integrate both the DAS PSD and AWAC PSD over the desired wave band
+#         das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3) #wave band defined over the das PSD frequency bins
+#         awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <=0.3)
+#         das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band]) #integrated power spectral density of the DAS
+#         awac_psd_variance = np.trapezoid(pressure_spectrum[t, ch, awac_wave_band], awac_freqs[awac_wave_band]) #integrated power spectral density of the AWAC
+#
+#         if das_psd_variance <= 0:  #if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
+#             C[ch] = np.nan
+#             continue
+#
+#         calibration_coefficient = awac_psd_variance / das_psd_variance #compute the calibration coefficient as the ratio of the integrated AWAC PSD over the integrated DAS PSD
+#         C[ch] = calibration_coefficient #store the coefficient for this time and channel
+#
+#     # save the calibration coefficients
+#     np.save(f'./data/frf_awac/calibration_coefficients/CalibCoeff_{das_start_time.tolist().strftime("_%Y-%m-%d_%H_%M_%S")}', C)
+#     tqdm.write(f'Saved calibration coefficient for {das_start_time.tolist().strftime("%Y-%m-%d %H:%M:%S")}')
 
         #SANITY CHECK
         # # derive Hrms from corrected S1_local
@@ -336,17 +571,6 @@ for t in tqdm(range(N_files), colour='#ff5733'):
 # plt.title('Hrms derived from corrected Directional Spectra at each DAS channel')
 # plt.show()
 # plt.close('all')
-
-
-#TODO: check the code for errors. compare the spectra derived wave heights to measured wave heights.
-#TODO: opportunity for parallel computing here to speed things up.
-#TODO: burst level calibration - because the AWAC only records pressure spectra for a 34 minute burst (26 minute off)
-
-
-#TODO: check whether the AWAC is getting its spectra from SUV or AUV
-#TODO: wave_frequency, wave energy density, directional wave energy density, from the florence AWAC.
-
-
 
 
 '''BUILD DAS XYZ GRID'''
