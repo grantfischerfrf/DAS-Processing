@@ -1,14 +1,7 @@
 import numpy as np
-from datetime import datetime, timedelta
-import pandas as pd
-import xarray as xr
 import glob
-from FRF_DAS_processing import sequence_number, strain2phase
+from FRF_DAS_processing import sequence_number
 import os
-import re
-from FRF_DAS_plots import load_processedData
-from scipy.signal import welch
-from tqdm import tqdm
 from functools import partial
 from Empirical_Calibration import process_worker
 from multiprocessing import Pool
@@ -21,9 +14,9 @@ if __name__ == "__main__":
 
     save_folder = './data/frf_awac/calibration_coefficients'  #directory to save the data to
 
-    DAS_XYZ_path = './data/frf_awac/channel_grid.pkl'
+    DAS_XYZ_path = './data/frf_awac/channel_grid.pkl'  #path to the x, y, and depth of the DAS cable
 
-    AWAC1_path = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+    AWAC1_path = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'  #Awac data for calibration
 
     os.makedirs(save_folder, exist_ok=True) #make save folder if it does not already exist
 

@@ -1,9 +1,8 @@
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 import pandas as pd
 import xarray as xr
-import glob
-from FRF_DAS_processing import sequence_number, strain2phase
+from FRF_DAS_processing import strain2phase
 import re
 from FRF_DAS_plots import load_processedData
 from scipy.signal import welch
@@ -63,7 +62,6 @@ def shoalingCoefficient(k0, h0, k1, h1):
 def refractionCoefficient(theta0, theta1):
 
     #compute refraction coefficient using snells law - assuming straight and parallel depth contours
-    #TODO: convert this to ray tracing at some point to deal with varying bathymetry in the alongshore
 
     return np.sqrt(np.cos(theta0) / np.cos(theta1))  #ratio of cosines of the deep water and shallow water wave angles
 
@@ -106,7 +104,7 @@ def get_DAS_PSD(file_path, nperseg, noverlap=None, sampling_frequency=2):
     return freqs, PSD
 
 def compute_calibration_coefficient(files_to_process,
-        save_folder,
+        save_folder,  #TODO: calibration coefficient is being save naively right now. There is no knowledge of what channel it belongs to. Save the channel number with the calibration coefficeint and a flag of whether it is good or not.
         channel_grid,
         S_f_theta_eta,
         awac_freqs,
@@ -118,7 +116,7 @@ def compute_calibration_coefficient(files_to_process,
         gaugeDepth,
         gaugeElevation,
         bottomElevation,
-        gamma_break,):
+        gamma_break):
 
     #define constants
     rho = 1025
@@ -133,7 +131,7 @@ def compute_calibration_coefficient(files_to_process,
     awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3) #wave band to integrate over
 
     # precompute trig functions for wave refraction
-    theta0_deg = dirs - 71.8535  # convert measure wave angle to xFRF shore normal convention for snells law
+    theta0_deg = dirs - 71.8535  # convert measure wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore
     theta0_deg = (theta0_deg + 180) % 360 - 180  # wrap to -180, 180
 
     valid_theta = (
@@ -153,14 +151,14 @@ def compute_calibration_coefficient(files_to_process,
 
     valid_channels = 0
 
-    for t in tqdm(range(N_files), colour='yellow'):
+    Channel_Numbers = np.array(range(N_channels)) + 1
 
-        C = np.zeros(N_channels)  # empty array to hold the calibration coefficient c(t, x)
+    for t in tqdm(range(N_files), colour='yellow'):
 
         # find the starttime of the Das file
         match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})',
                           files_to_process[t])  # extract the timestamp from the first file name
-        timestamp = None
+
         if match:
             timestamp = match.group(1)  # pull the timestamp from the regex object
         else:
@@ -192,6 +190,15 @@ def compute_calibration_coefficient(files_to_process,
 
         k0 = wavenumber(h0, T)  # wavenumber at the AWAC at time t
 
+        calibration_flag = np.ones(N_channels,
+                                   dtype=int)  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+        C = np.full(N_channels, np.nan, dtype=np.float32)  # empty array to hold the calibration coefficient c(t, x)
+
+        water_depth = np.full(N_channels, np.nan)
+
+        directional_spectrum = np.full((N_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32) #nan array to fill with directional spectrum data - if bad calibration it stays as nans
+
         for ch in range(N_channels):
 
             # skip the first ~100 channels of the DAS cable, there is no signal there  #TODO: May need to do this to keep the calibration factor valid.
@@ -204,16 +211,19 @@ def compute_calibration_coefficient(files_to_process,
             das_PSD = das_PSD_all_channels[:, ch]
             # TODO: probably will need to average the PSD for the 35 minute burst.
 
-            h1 = surfaceElevation - bed[ch]
+            h1 = surfaceElevation - bed[ch] #depth at each point - corrected for tides?
 
-            h1_list.append(h1)
+            # h1_list.append(h1)
 
             if h1 <= 0:  # h1 must be positive for dispersion relation (wavenumber calculation) can use 1
+                calibration_flag[ch] = 0
                 continue
+
+            water_depth[ch] = h1 #append the water_depth for each channel #TODO: make sure this is correct - want to correct for tides but not resolving individual waves for h.
 
             valid_channels += 1  # add a count for each channel that is allowed to pass through
 
-            S1_local = np.zeros((len(awac_freqs), len(dirs)))
+            S1_local = np.zeros((len(awac_freqs), len(dirs)), dtype=np.float32)
 
             k1_arr = np.zeros(len(awac_freqs))  # store k1 per frequency - no recomputation later
 
@@ -231,6 +241,7 @@ def compute_calibration_coefficient(files_to_process,
                 for j in range(len(dirs)):
 
                     if not valid_theta[j]:
+                        # calibration_flag[ch] = 0
                         continue
 
                     theta0 = theta0_rad[j]
@@ -243,6 +254,7 @@ def compute_calibration_coefficient(files_to_process,
 
                     # sin_theta1 = (k0_i / k1) * np.sin(theta0)
                     if np.abs(sin_theta1) > 1:  # no physical solution
+                        # calibration_flag[ch] = 0
                         continue
 
                     theta1 = np.arcsin(sin_theta1)
@@ -260,13 +272,21 @@ def compute_calibration_coefficient(files_to_process,
                     S1 = S0 * (
                                 Ks ** 2) * J  # apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
 
+                    theta1_from_deg = np.rad2deg(theta1) + 71.8535 #convert radians to degrees -> convert back to original direction bin reference (true north)
+                    theta1_abs = theta1_from_deg + 71.8535 # convert back to original direction bin reference (true north)
+
+                    #wrap back to 0-360 original direction convention
+                    theta1_from_deg %= 360
+
+                    diff = np.abs((dirs - theta1_from_deg + 180) % 360 - 180)
+                    j_new = np.argmin(diff)
+
                     S1_local[
-                        i, j] = S1  # shape(n_freq, n_dir) - store the local spectrum for this frequency and direction
+                        i, j_new] += S1  # shape(n_freq, n_dir) - store the local spectrum (at a particular channel) for this frequency and direction
 
             # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed
-            m0_per_freq = np.sum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
-            m0 = np.sum(
-                m0_per_freq * df)  # integrate over frequency to get the total variance of the sea surface elevation spectrum
+            m0_per_freq = np.nansum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
+            m0 = np.nansum(m0_per_freq * df)  # integrate over frequency to get the total variance of the sea surface elevation spectrum
 
             Hrms = np.sqrt(
                 8 * m0)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
@@ -274,9 +294,10 @@ def compute_calibration_coefficient(files_to_process,
             Hmax = gamma_break * h1  # compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
 
             if Hrms > Hmax:
-                scale = (
-                                    Hmax / Hrms) ** 2  # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+                scale = (Hmax / Hrms) ** 2  # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
                 S1_local = S1_local * scale  # apply the scaling factor to the spectrum
+
+            directional_spectrum[ch, :, :] = S1_local #save the full directional spectrum
 
             # convert surface elevation spectrum to pressure spectrum using linear wave theory
             for i, f in enumerate(awac_freqs):
@@ -288,9 +309,9 @@ def compute_calibration_coefficient(files_to_process,
                 P1_f = S1_local[i, :] * (
                             rho * g * Kp) ** 2  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
 
-                pressure_spectrum[i] = np.sum(P1_f) * dtheta  # integrate over the direction bins to get a 1D spectrum
+                pressure_spectrum[i] = np.nansum(P1_f) * dtheta  # integrate over the direction bins to get a 1D spectrum
 
-            # comput the calibration coefficient at each channel
+            # compute the calibration coefficient at each channel
             # first integrate both the DAS PSD and AWAC PSD over the desired wave band
             das_wave_band = (das_freqs >= 0.05) & (
                         das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
@@ -302,17 +323,44 @@ def compute_calibration_coefficient(files_to_process,
             ) # integrated power spectral density of the AWAC
 
             if das_psd_variance <= 0:  # if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
-                C[ch] = np.nan
+                calibration_flag[ch] = 0
                 continue
 
             calibration_coefficient = awac_psd_variance / das_psd_variance  # compute the calibration coefficient as the ratio of the integrated AWAC PSD over the integrated DAS PSD
             C[ch] = calibration_coefficient  # store the coefficient for this time and channel
 
-        # save the calibration coefficients
-        np.save(
-            f'{save_folder}/CalibCoeff_{das_start_time.tolist().strftime("_%Y-%m-%d_%H_%M_%S")}',
-            C)
+            # # SANITY CHECK
+            # # derive Hrms from corrected S1_local
+            # m0_local_freq = np.sum(S1_local * dtheta,
+            #                        axis=1)  # integrate over direction to get the variance of the sea surface elevation spectrum at frequencies
+            # m0_local = np.sum(m0_local_freq * df)
+            # Hrms_local = np.sqrt(
+            #     8 * m0_local)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
+            # m0_list.append(Hrms_local)
+
+        save_dict = {  #FIXME: add das spectrum?
+            "calibration_coefficient": C,
+            "awac_corrected_directional_spectrum": directional_spectrum,
+            'awac_frequency_bins': awac_freqs,
+            'awac_directional_bins': dirs,
+            "channel_number": Channel_Numbers,
+            "water_depth": water_depth,
+            "calibration_flag": calibration_flag
+        }
+
+        # save the data
+        np.savez_compressed(
+            f'{save_folder}/Calib_{das_start_time.tolist().strftime("_%Y-%m-%d_%H_%M_%S")}.npz',
+            save_dict)
         # tqdm.write(f'Saved calibration coefficient for {das_start_time.tolist().strftime("%Y-%m-%d %H:%M:%S")}')
+
+        # # SANITY CHECK
+        # plt.plot(np.arange(len(m0_list)), m0_list)
+        # plt.xlabel('channel number')
+        # plt.ylabel('Hrms (m)')
+        # plt.title('Hrms derived from corrected Directional Spectra at each DAS channel')
+        # plt.show()
+        # plt.close('all')
 
 
 def process_worker(files_to_process, save_folder, DAS_XYZ_path, AWAC1_path, AWAC2_path=None, gamma_break=0.43):
@@ -351,7 +399,6 @@ def process_worker(files_to_process, save_folder, DAS_XYZ_path, AWAC1_path, AWAC
 
 
 #TODO: check the code for errors. compare the spectra derived wave heights to measured wave heights.
-#TODO: opportunity for parallel computing here to speed things up.
 #TODO: burst level calibration - because the AWAC only records pressure spectra for a 34 minute burst (26 minute off)
 
 

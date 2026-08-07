@@ -1,12 +1,15 @@
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timezone
+from scipy.signal import hilbert, find_peaks
+from scipy.ndimage import maximum_filter1d
 import h5py
 import os
+import re
 import numpy as np
 import glob
 from tqdm import tqdm
-from FRF_DAS_processing import read_dasFile, sequence_number, time2dateTime
+from FRF_DAS_processing import read_dasFile, sequence_number, time2dateTime, strain2phase
 from scipy.signal import welch, spectrogram
 
 
@@ -19,25 +22,54 @@ def load_processedData(processed_data_path):
     return strain, time
 
 
-def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=None):
+def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=None, envelope=False):
 
     #plot a timeseries given a list of strain file paths.
     fig, axes = plt.subplots(1, 1, figsize=(20, 8))
 
     tqdm.write(f'Plotting {len(file_paths)} files...')
     for file in tqdm(file_paths, colour='#ff5733'): #loop through all file paths
+
+        match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})',
+                          file)
+        if match:
+            timestamp_str = match.group(1)
+            timestamp = datetime.strptime(timestamp_str, "%Y_%m_%d_%H_%M_%S")
+            timestamp_utc = timestamp.replace(tzinfo=timezone.utc)
+            if timestamp_utc < t_start or timestamp_utc > t_end:
+                continue
+        else:
+            print(f"No timestamp found in file name: {file}")  # break the loop and inspect file names instead
+            break
+
         strain, time = load_processedData(file)
 
-        datetime_array = time2dateTime(time)  # convert unix to datetime for visualizations
-        axes.plot(datetime_array, strain[:, channel], color='blue')
+        #convert strain to phase shifts
+        phase = strain2phase(strain)
 
-    axes.set_title(f'Channel {channel}: Strain v Time')
-    axes.set_ylabel('Strain')
+        datetime_array = time2dateTime(time)  # convert unix to datetime for visualizations
+        if not envelope:
+            axes.plot(datetime_array[::100], phase[::100, channel], color='blue')
+        else:
+            #find phase envelope
+            phase_envelope = np.abs(hilbert(phase[:, channel]))
+            # find peaks in envelope
+            peaks, _ = find_peaks(phase_envelope, distance=10, prominence=0.0001)
+
+            # plot only the top envelope points
+            axes.plot(
+                datetime_array[peaks][::100],
+                phase_envelope[peaks][::100],
+                color='red'
+            )
+
+    axes.set_title(f'Channel {channel}: Phase Shift v Time')
+    axes.set_ylabel('Phase Shift (rad)')
     axes.set_xlabel('Time (UTC)')
     if t_start is not None and t_end is not None:
         axes.set_xlim(t_start, t_end)
     plt.tight_layout()
-    plt.savefig(f'{save_path}/timeseries_{channel}.png')
+    plt.savefig(f'{save_path}/{starttime.strftime("%Y_%m_%d_%H_%M_%S")}_timeseries_{channel}.png')
     plt.show()
     plt.close('all')
 
@@ -407,7 +439,7 @@ if __name__ == "__main__":
 
     # define starttime and endtime for plotting
     starttime = datetime(2026, 6, 6, 0, 0, 0, tzinfo=timezone.utc)
-    endtime = datetime(2026, 6, 6, 13, 5, 0, tzinfo=timezone.utc)
+    endtime = datetime(2026, 6, 6, 23, 59, 59, tzinfo=timezone.utc)
 
     '''CREATE WATERFALL PLOT'''
     # # savepath = './figures/20260601'
@@ -445,20 +477,19 @@ if __name__ == "__main__":
     # spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
 
     '''TIMESERIES PLOTS'''
-    # plot_timeSeries(processed_data_paths, save_path='./figures', channel=400)
-
+    plot_timeSeries(processed_data_paths, channel=700, save_path='./figures', t_start=starttime, t_end=endtime, envelope=False)
 
     '''WAVENUMBER AND AMPLITUDE TIMESERIES AT A PARTICULAR CHANNEL'''
     # k_and_amp_timeseries(processed_data_paths, save_path='./figures', channel_start=600, channel_end=620, channel_spacing=1.6)
 
     '''PSD ACROSS CHANNELS'''
-    nperseg = 256
-    noverlap = nperseg // 2
-    # PSD_across_channels(processed_data_paths, nperseg, noverlap, averaged=False, dB=False)
+    # nperseg = 256
+    # noverlap = nperseg // 2
+    # # PSD_across_channels(processed_data_paths, nperseg, noverlap, averaged=False, dB=False)
 
     '''PSD AT ONE CHANNEL'''
-    channel = 310
-    PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
+    # channel = 310
+    # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
 
     #TODO: normalizing the strain by the distance from shore may help with fading in the middle. Not sure if you can do this, decay in strain signal may be related nonlinearly with distance
@@ -467,3 +498,5 @@ if __name__ == "__main__":
     #TODO: look at the Radar data.
 
     #TODO: play with the sampling window for the power spectral density calculation - some data is fuzzy, maybe use log scale for IG signal?
+
+    #TODO: need a clipping function for time

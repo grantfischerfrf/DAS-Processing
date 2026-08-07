@@ -1106,11 +1106,13 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 # axes[0].grid()
 #
 # axes[1].scatter(df_clipped['Time'], df_clipped['Peak Direction'], s=3, color='blue')
+# axes[1].axhline(71.8538, color='black', linestyle='--', label='xFRF shore normal')
 # axes[1].set_xlabel('Time')
 # axes[1].set_ylabel('Direction (degrees CW relative to true north)')
 # axes[1].set_title('Peak Wave Direction Over Time')
 # axes[1].grid()
-# axes[1].set_ylim(0, 180)  #east coast beach
+# # axes[1].set_ylim(71.8538 - 90, 71.8535 + 90)  #east coast beach
+# axes[1].legend(loc='upper left')
 #
 # fig.suptitle('CDIP 433 - Duck FRF 17m Buoy: Wave Information 06/01/2026 - 06/14/2026', fontsize=16, fontweight='bold')
 #
@@ -1118,7 +1120,7 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 # plt.savefig('./figures/waveInformation.png')
 # plt.show()
 # plt.close('all')
-#
+
 # '''WIND'''
 # wind_path = './data/windData.txt'
 # wind_data = pd.read_csv(wind_path, sep=r'\s+', skiprows=[1])
@@ -1185,5 +1187,81 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 #TODO: what is the burst time period and what is the time window that the average is going over
 
 
+'''DAS SIGNAL WRT WAVE DIRECTION'''
+#open calibrated file
+data_path = './data/frf_awac/calibration_coefficients/Calib__2026-06-01_00_05_01.npz'  #gets the data from one 5 minute DAS file
+data_struc = np.load(data_path, allow_pickle=True)
+data = data_struc['arr_0'].item()
 
+dirspec = data['awac_corrected_directional_spectrum']
+bad_channels = np.all(np.isnan(dirspec), axis=(1, 2)) #find which channels are bad - nans
+dirspec_clean = np.nan_to_num(dirspec, nan=0.0) #of shape (N_channels, N_freqs, N_dirs)
+freqs = data['awac_frequency_bins']
+dirs = data['awac_directional_bins']
+h = data['water_depth'] #water depth should be corrected for tides.
+channels = data['channel_number']
+
+df = np.gradient(freqs)
+dtheta = np.gradient(dirs)
+
+#pull out the representative wave for each channel
+#significant wave height - Hmo
+m0 = np.trapezoid(np.trapezoid(dirspec_clean, dirs, axis=-1), freqs, axis=-1)
+Hs = 4.004 * np.sqrt(m0)
+Hs[bad_channels] = np.nan
+
+#frequency spectrum
+S_f = np.trapezoid(dirspec_clean, dirs, axis=-1)
+#direction spectrum
+S_theta = np.trapezoid(dirspec_clean, freqs, axis=1)
+
+#peak frequency   #TODO: careful if the spectrum is not narrow banded here.
+fp_idx = np.argmax(S_f, axis=1) #indices of the peak frequency bin
+fp = freqs[fp_idx] #peak frequency at each channel
+fp[bad_channels] = np.nan #restore invalid channels
+
+#peak direction
+theta_p_idx = np.argmax(S_theta, axis=1) #indices of the peak direction bin  #TODO: check to make sure that refraction is working on non shore normal days
+theta_p = dirs[theta_p_idx] #peak direction at each channel  #TODO: does this need to be converted back to what we wanted
+theta_p[bad_channels] = np.nan #restore invalid channels
+
+#pull the DAS channel grid to get the depth and calculate local wavenumber at each channel
+Tp = 1/fp #peak period
+k = wavenumber(h, Tp) #local wave number
+
+Kp = 1 / (np.cosh(k*h)) #pressure response factor
+
+#pressure gradient amplitude in x and y build from bulk statistics
+rho = 1025 #kg/m**3
+g = 9.81 #m/s**2
+
+# rotate to shore-normal frame and flip to propagation direction
+theta_p_local = theta_p - 71.8535 #convert to xFRF shore-normal orientation
+theta_p_prop = theta_p_local + 180  #converts waves coming from direction to waves propagating towards the shoreline
+theta_p_rad = np.deg2rad(theta_p_local) #convert degrees to radians
+
+dpdx = (0.5 * rho * g * Hs * k * np.cos(theta_p_rad) * Kp) / 10000 #units of decibars/m - fluid pressure is increasing/decreasing for every space along the x grid.
+dpdy = -(0.5 * rho * g * Hs * k * np.sin(theta_p_rad) * Kp) / 10000 #units of decibars/m - negative because positive xFRF is to the North (to the left of the shore normal transect)
+#a wave coming from the south (dirs=180 - 71.8535) gives a positive dpdy and a wave from the north (dirs=0 - 71.8535) gives a negative dpdy
+
+#plot pressure gradients
+fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+
+axes[0].scatter(channels, dpdx, color='blue', s=3)
+axes[0].set_xlabel('Channel Number')
+axes[0].set_ylabel('dp/dx (dbar/m)')
+
+axes[1].scatter(channels, dpdy, color='red', s=3)
+axes[1].set_xlabel('Channel Number')
+axes[1].set_ylabel('dp/dy (dbar/m)')
+
+fig.suptitle('Bulk Pressure Gradient v. Channel Number')
+
+plt.tight_layout()
+plt.show()
+plt.close('all')
+
+
+#TODO: compare the pressure gradients to the wave directions.
+#TODO: compute the pressure amplitude (non gradient) and normalize by the respective wavelength - then look at components (this should be a nondimensional "steepness" parameter)
 
