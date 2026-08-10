@@ -6,13 +6,41 @@ import xarray as xr
 import glob
 from FRF_DAS_processing import sequence_number, time2dateTime, strain2phase
 import re
-from FRF_DAS_plots import load_processedData
+from FRF_DAS_plots import load_processedData, waterFall
 from scipy.signal import welch
+from Empirical_Calibration import get_DAS_PSD
 import scipy
 from tqdm import tqdm
 from scipy.interpolate import interp1d, LinearNDInterpolator
 
 from geoprocess import ncsp2FRF
+
+def find_spike(signal, sigma=5):
+    # find where a signal shoots up from a spike - sigma is the sliding window size that the variance is calculated over.
+    threshold = 0.01 * signal.max()
+    t_min = np.argmax(signal < threshold)
+
+    t_values = range(t_min, len(signal) - sigma)
+    ratios = []
+
+    for t in t_values:
+        left = signal[
+               t - sigma:t]  # checks the variance from bins left and right from a point. At the knee point, the ratio in left and right variance spikes
+        right = signal[t:t + sigma]
+
+        if len(left) > 1 and len(right) > 1:
+            var_left = np.var(left)
+            var_right = np.var(right)
+
+            if var_right > 0:
+                ratios.append(var_left / var_right)
+            else:
+                ratios.append(0)  # guard against divide by 0
+        else:
+            ratios.append(0)
+
+    T = t_values[np.argmax(ratios)]
+    return T, ratios
 
 def wavenumber(h, T, g=9.81):
 
@@ -67,7 +95,6 @@ def shoalingCoefficient(k0, h0, k1, h1):
 def refractionCoefficient(theta0, theta1):
 
     #compute refraction coefficient using snells law - assuming straight and parallel depth contours
-    #TODO: convert this to ray tracing at some point to deal with varying bathymetry in the alongshore
 
     return np.sqrt(np.cos(theta0) / np.cos(theta1))  #ratio of cosines of the deep water and shallow water wave angles
 
@@ -95,7 +122,7 @@ def get_AWAC_data(file_path):
     return S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation
 
 
-def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2):
+def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_frequency=2):
 
     #read file
     strain, time = load_processedData(file_path)
@@ -206,7 +233,7 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 #         #     continue
 #
 #         #pull the DAS PSD at the current channel and time step
-#         das_freqs, das_PSD = get_DAS_PSD(processed_data_paths[t], ch, nperseg=256, sampling_frequency=2)  #this is in units of m**2/Hz
+#         das_freqs, das_PSD = get_DAS_PSD_channel(processed_data_paths[t], ch, nperseg=256, sampling_frequency=2)  #this is in units of m**2/Hz
 #         #TODO: probably will need to average the PSD for the 35 minute burst.
 #
 #         #get the depth at the current channel
@@ -335,7 +362,6 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 
 
 '''CALIBRATION COEFFICIENT FASTER VERSION - NO MULTIPROCESSING'''
-
 # '''CALIBRATION COEFFICIENT'''
 # #data is analyzed in 34 minute bursts on the hour.
 #
@@ -574,151 +600,151 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 
 
 '''BUILD DAS XYZ GRID'''
-# #find the DAS channel closest to the awac and get the PSD to a 34 (35 for DAS) minute burst (average)
-# # channel = 188 #around 300m out on the cross-shore
-# # channel = 375 #aroudn 600m out on the cross-shore
-#
-# file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[0:7]
-# psds = []
-# for file in tqdm(file_paths, colour='#ff5733'):
-#
-#     strain, time = load_processedData(file)
-#
-#     N_samples, N_channels = strain.shape  #(600, 1592) #1592 channels each at 1.6m channel spacing.
-#
-#     #compute averaged PSD at a certain channel
-#     channel = 188
-#
-#     # obtain the power spectral density (and sample frequencies) of strain array
-#     freqs, psd = welch(strain[:, channel], fs=2, nperseg=256, noverlap=256//2)
-#
-#     psds.append(psd)
-#
-# #average psd
-# avg_psd = np.mean(psds, axis=0)
-#
-# #Number of channels
-# N_channels = 1592
-#
-# #length of grid in meters
-# grid_len = (N_channels * 1.6) // 2  #divide by two because the cable wraps back around on itself.
-#
-# #find where the cable lays in x FRF to match it with a depth from the larc survey.
-# larc_data_path = './data/frf_awac/FRF_geomorphology_elevationTransects_survey_20260611.nc'
-# larc_data = xr.open_dataset(larc_data_path)
-# larc_x = larc_data.xFRF.values
-# larc_y = larc_data.yFRF.values
-# profile_number = larc_data.profileNumber.values
-# time = larc_data.elevation.coords['time'].values
-# elevation = larc_data.elevation.values  #depth profile
-#
-# #plot profile
-# # plt.scatter(larc_x, larc_y, c=elevation)
-# # plt.show()
-# # plt.close('all')
-#
-# #pull just the bathymetry data along the yFRF=1000m transect
-# cross_shore_profile_mask = (profile_number==1006)
-# masked_x = larc_x[cross_shore_profile_mask]
-# masked_y = larc_y[cross_shore_profile_mask]
-# masked_elevation = elevation[cross_shore_profile_mask]
-#
-# #pull just the bathymetry data along the xFRF = 778
-# profiles = np.unique(profile_number)
-#
-# xs = []
-# ys = []
-# zs = []
-#
-# for p in profiles:
-#     mask = profile_number == p
-#
-#     idx = np.argmin(np.abs(larc_x[mask] - 778))
-#
-#     xs.append(larc_x[mask][idx])
-#     ys.append(larc_y[mask][idx])
-#     zs.append(elevation[mask][idx])
-#
-# xs = np.array(xs)  #alongshore profile
-# ys = np.array(ys)
-# zs = np.array(zs)
-#
-# #DAS survey locations
-# offshore_survey_path = './DAS_deploy/Alex_FiberLay_20250730.csv'
-#
-# offshore_survey = pd.read_csv(offshore_survey_path)
-# offshore_survey_x = offshore_survey['X']
-# offshore_survey_y = offshore_survey['Y']
-#
-# offshore_frf_x = []
-# offshore_frf_y = []
-# for x, y in zip(offshore_survey_x, offshore_survey_y):
-#     dict = ncsp2FRF(x, y)
-#     offshore_frf_x.append(dict['xFRF'])
-#     offshore_frf_y.append(dict['yFRF'])
-#
-# offshore_frf_x = np.array(offshore_frf_x)
-# offshore_frf_y = np.array(offshore_frf_y)
-#
-# dx = np.diff(offshore_frf_x)
-# dy = np.diff(offshore_frf_y)
-#
-# distance = np.sqrt(dx**2 + dy**2)
-#
-# s_survey = np.concatenate(([0], np.cumsum(distance))) #total distance along the cable in meters from the survey
-#
-# #build grid to populate - in meters
-# cable_grid = np.arange(0, grid_len, 1.6)  #1.6m channel spacing
-#
-# # interpolate outbound leg x,y from the surveyed fiber path - given a distance along the coordinate whats the x or y coordinate
-# interp_x = interp1d(s_survey, offshore_frf_x, bounds_error=False, fill_value="extrapolate")
-# interp_y = interp1d(s_survey, offshore_frf_y, bounds_error=False, fill_value="extrapolate")
-#
-# x_out = interp_x(cable_grid)
-# y_out = interp_y(cable_grid)
-#
-# # mirror for the return leg to fill out N_channels
-# n_return = N_channels - len(cable_grid)
-# x_ret = x_out[::-1][:n_return]
-# y_ret = y_out[::-1][:n_return]
-#
-# channel_x = np.concatenate([x_out, x_ret])
-# channel_y = np.concatenate([y_out, y_ret])
-# channel_number = np.arange(N_channels)
-#
-# # split channels by whether they're on the cross-shore or alongshore leg
-# cross_shore_mask = channel_x <= 750 #xFRF location where the cable should turn
-# alongshore_mask = channel_x > 750
-#
-# channel_z = np.full(N_channels, np.nan)
-#
-# # cross-shore leg: z as a function of xFRF
-# sort_idx_x = np.argsort(masked_x)
-# interp_z_crossshore = interp1d(masked_x[sort_idx_x], masked_elevation[sort_idx_x],
-#                                 bounds_error=False, fill_value="extrapolate")
-# channel_z[cross_shore_mask] = interp_z_crossshore(channel_x[cross_shore_mask])  #given an xFRF value what is the seafloor elevation here - cross-shore only
-#
-# # alongshore leg: z as a function of yFRF
-# sort_idx_y = np.argsort(ys)
-# interp_z_alongshore = interp1d(ys[sort_idx_y], zs[sort_idx_y],
-#                                 bounds_error=False, fill_value="extrapolate")
-# channel_z[alongshore_mask] = interp_z_alongshore(channel_y[alongshore_mask])  #given a yFRF value what is the seafloor elevation here - alongshore only
-#
-# channel_grid = pd.DataFrame({
-#     'channel': channel_number,
-#     'xFRF': channel_x,
-#     'yFRF': channel_y,
-#     'z': channel_z,
-# })
-#
-# # save the output grid.
-# channel_grid.to_pickle('./data/frf_awac/channel_grid.pkl')
-#TODO: need to do this for each time step
+#find the DAS channel closest to the awac and get the PSD to a 34 (35 for DAS) minute burst (average)
+# channel = 188 #around 300m out on the cross-shore
+# channel = 375 #aroudn 600m out on the cross-shore
 
-# #sanity plot
-# plt.scatter(channel_grid['xFRF'], channel_grid['yFRF'], c=channel_grid['z'])
+file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)[0:7]
+psds = []
+for file in tqdm(file_paths, colour='#ff5733'):
+
+    strain, time = load_processedData(file)
+
+    N_samples, N_channels = strain.shape  #(600, 1592) #1592 channels each at 1.6m channel spacing.
+
+    #compute averaged PSD at a certain channel
+    channel = 188
+
+    # obtain the power spectral density (and sample frequencies) of strain array
+    freqs, psd = welch(strain[:, channel], fs=2, nperseg=256, noverlap=256//2)
+
+    psds.append(psd)
+
+#average psd
+avg_psd = np.mean(psds, axis=0)
+
+#Number of channels
+N_channels = 1592
+
+#length of grid in meters
+grid_len = (N_channels * 1.6) // 2  #divide by two because the cable wraps back around on itself.
+
+#find where the cable lays in x FRF to match it with a depth from the larc survey.
+larc_data_path = './data/frf_awac/FRF_geomorphology_elevationTransects_survey_20260611.nc'
+larc_data = xr.open_dataset(larc_data_path)
+larc_x = larc_data.xFRF.values
+larc_y = larc_data.yFRF.values
+profile_number = larc_data.profileNumber.values
+time = larc_data.elevation.coords['time'].values
+elevation = larc_data.elevation.values  #depth profile
+
+#plot profile
+# plt.scatter(larc_x, larc_y, c=elevation)
 # plt.show()
 # plt.close('all')
+
+#pull just the bathymetry data along the yFRF=1000m transect
+cross_shore_profile_mask = (profile_number==1006)
+masked_x = larc_x[cross_shore_profile_mask]
+masked_y = larc_y[cross_shore_profile_mask]
+masked_elevation = elevation[cross_shore_profile_mask]
+
+#pull just the bathymetry data along the xFRF = 778
+profiles = np.unique(profile_number)
+
+xs = []
+ys = []
+zs = []
+
+for p in profiles:
+    mask = profile_number == p
+
+    idx = np.argmin(np.abs(larc_x[mask] - 778))
+
+    xs.append(larc_x[mask][idx])
+    ys.append(larc_y[mask][idx])
+    zs.append(elevation[mask][idx])
+
+xs = np.array(xs)  #alongshore profile
+ys = np.array(ys)
+zs = np.array(zs)
+
+#DAS survey locations
+offshore_survey_path = './DAS_deploy/Alex_FiberLay_20250730.csv'
+
+offshore_survey = pd.read_csv(offshore_survey_path)
+offshore_survey_x = offshore_survey['X']
+offshore_survey_y = offshore_survey['Y']
+
+offshore_frf_x = []
+offshore_frf_y = []
+for x, y in zip(offshore_survey_x, offshore_survey_y):
+    dict = ncsp2FRF(x, y)
+    offshore_frf_x.append(dict['xFRF'])
+    offshore_frf_y.append(dict['yFRF'])
+
+offshore_frf_x = np.array(offshore_frf_x)
+offshore_frf_y = np.array(offshore_frf_y)
+
+dx = np.diff(offshore_frf_x)
+dy = np.diff(offshore_frf_y)
+
+distance = np.sqrt(dx**2 + dy**2)
+
+s_survey = np.concatenate(([0], np.cumsum(distance))) #total distance along the cable in meters from the survey
+
+#build grid to populate - in meters
+cable_grid = np.arange(0, grid_len, 1.6)  #1.6m channel spacing
+
+# interpolate outbound leg x,y from the surveyed fiber path - given a distance along the coordinate whats the x or y coordinate
+interp_x = interp1d(s_survey, offshore_frf_x, bounds_error=False)
+interp_y = interp1d(s_survey, offshore_frf_y, bounds_error=False)
+
+x_out = interp_x(cable_grid)
+y_out = interp_y(cable_grid)
+
+# mirror for the return leg to fill out N_channels
+n_return = N_channels - len(cable_grid)
+x_ret = x_out[::-1][:n_return]
+y_ret = y_out[::-1][:n_return]
+
+channel_x = np.concatenate([x_out, x_ret])
+channel_y = np.concatenate([y_out, y_ret])
+channel_number = np.arange(N_channels)
+
+# split channels by whether they're on the cross-shore or alongshore leg
+cross_shore_mask = channel_x <= 750 #xFRF location where the cable should turn
+alongshore_mask = channel_x > 750
+
+channel_z = np.full(N_channels, np.nan)
+
+# cross-shore leg: z as a function of xFRF
+sort_idx_x = np.argsort(masked_x)
+interp_z_crossshore = interp1d(masked_x[sort_idx_x], masked_elevation[sort_idx_x],
+                                bounds_error=False)
+channel_z[cross_shore_mask] = interp_z_crossshore(channel_x[cross_shore_mask])  #given an xFRF value what is the seafloor elevation here - cross-shore only
+
+# alongshore leg: z as a function of yFRF
+sort_idx_y = np.argsort(ys)
+interp_z_alongshore = interp1d(ys[sort_idx_y], zs[sort_idx_y],
+                                bounds_error=False)
+channel_z[alongshore_mask] = interp_z_alongshore(channel_y[alongshore_mask])  #given a yFRF value what is the seafloor elevation here - alongshore only
+
+channel_grid = pd.DataFrame({
+    'channel': channel_number,
+    'xFRF': channel_x,
+    'yFRF': channel_y,
+    'z': channel_z,
+})
+
+# save the output grid.
+channel_grid.to_pickle('./data/frf_awac/channel_grid.pkl')  #TODO: make this a function in a new utilities script
+
+#sanity plot
+plt.scatter(offshore_frf_x, offshore_frf_y, c='orange', s=6)
+plt.scatter(channel_grid['xFRF'], channel_grid['yFRF'], c=channel_grid['z'])
+plt.show()
+plt.close('all')
 
 
 
@@ -1168,7 +1194,6 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 
 
 '''FLORENCE AWAC MAT FILE'''
-
 # florence_awac_path = './data/frf_awac/S104015A001_2A17WEcho_1.mat'
 # data = scipy.io.loadmat(florence_awac_path)
 # config = data['Config']
@@ -1187,81 +1212,249 @@ def get_DAS_PSD(file_path, channel, nperseg, noverlap=None, sampling_frequency=2
 #TODO: what is the burst time period and what is the time window that the average is going over
 
 
-'''DAS SIGNAL WRT WAVE DIRECTION'''
-#open calibrated file
-data_path = './data/frf_awac/calibration_coefficients/Calib__2026-06-01_00_05_01.npz'  #gets the data from one 5 minute DAS file
-data_struc = np.load(data_path, allow_pickle=True)
-data = data_struc['arr_0'].item()
+'''DAS SIGNAL WRT WAVE DIRECTION ACROSS CHANNELS'''
+# #open calibrated file
+# # data_path = './data/frf_awac/calibration_coefficients/Calib_2026-06-01_00_05_01.npz'  #gets the data from one 5 minute DAS file
+# data_path = './data/frf_awac/calibration_coefficients/Calib_2026-06-06_11_00_01.npz'
+# data_struc = np.load(data_path, allow_pickle=True)
+# data = data_struc['arr_0'].item()
+#
+# dirspec = data['awac_corrected_directional_spectrum']
+# bad_channels = np.all(np.isnan(dirspec), axis=(1, 2)) #find which channels are bad - nans
+# dirspec_clean = np.nan_to_num(dirspec, nan=0.0) #of shape (N_channels, N_freqs, N_dirs)
+# freqs = data['awac_frequency_bins']
+# dirs = data['awac_directional_bins']
+# h = data['water_depth'] #water depth should be corrected for tides.
+# channels = data['channel_number']
+#
+# df = np.gradient(freqs)
+# dtheta = np.gradient(dirs)
+#
+# #pull out the representative wave for each channel
+# #significant wave height - Hmo
+# awac_wave_band = (freqs >= 0.05) & (freqs <= 0.3)
+# m0 = np.trapezoid(np.trapezoid(dirspec_clean[:, awac_wave_band, :], dirs, axis=-1), freqs[awac_wave_band], axis=-1)
+# Hs = 4.004 * np.sqrt(m0)
+# Hs[bad_channels] = np.nan
+#
+# #frequency spectrum
+# S_f = np.trapezoid(dirspec_clean, dirs, axis=-1)
+# #direction spectrum
+# S_theta = np.trapezoid(dirspec_clean, freqs, axis=1)
+#
+# #peak frequency   #TODO: careful if the spectrum is not narrow banded here.
+# fp_idx = np.argmax(S_f, axis=1) #indices of the peak frequency bin
+# fp = freqs[fp_idx] #peak frequency at each channel
+# fp[bad_channels] = np.nan #restore invalid channels
+#
+# #peak direction
+# theta_p_idx = np.argmax(S_theta, axis=1) #indices of the peak direction bin  #TODO: check to make sure that refraction is working on non shore normal days
+# theta_p = dirs[theta_p_idx] #peak direction at each channel
+# theta_p[bad_channels] = np.nan #restore invalid channels
+#
+# #pull the DAS channel grid to get the depth and calculate local wavenumber at each channel
+# Tp = 1/fp #peak period
+# k = wavenumber(h, Tp) #local wave number
+#
+# Kp = 1 / (np.cosh(k*h)) #pressure response factor
+#
+# #pressure gradient amplitude in x and y build from bulk statistics
+# rho = 1025 #kg/m**3
+# g = 9.81 #m/s**2
+#
+# # rotate to shore-normal frame and flip to propagation direction
+# theta_p_local = theta_p - 71.8535 #convert to xFRF shore-normal orientation
+# theta_p_prop = theta_p_local + 180  #converts waves coming from direction to waves propagating towards the shoreline
+# theta_p_rad = np.deg2rad(theta_p_prop) #convert degrees to radians
+#
+# #pressure gradients - remember x increases offshore.
+# dpdx = (0.5 * rho * g * Hs * k * np.cos(theta_p_rad) * Kp) #/ 10000 #units of decibars/m - fluid pressure is increasing/decreasing for every space along the x grid.
+# dpdy = -(0.5 * rho * g * Hs * k * np.sin(theta_p_rad) * Kp) #/ 10000 #units of decibars/m - negative because positive xFRF is to the North (to the left of the shore normal transect)
+# #a wave coming from the south (dirs=180 - 71.8535) gives a positive dpdy and a wave from the north (dirs=0 - 71.8535) gives a negative dpdy
+#
+# #pressure amplitude
+# p_amp = 0.5 * rho * g * Hs * Kp
+#
+# #wavelengths: cross and alongshore
+# kx = k * np.cos(theta_p_rad)
+# ky = -k * np.sin(theta_p_rad) #ky is negative due to our coordinate system. + north and east, - south and west...ish based on FRF local coordinates.
+# Lx = (2 * np.pi) / kx
+# Ly = (2 * np.pi) / ky
+#
+# #'wave-steepness' like nondimensional parameter (Hs / L)
+# # eps_x = p_amp / (rho * g * Lx) #essentially becomes Hs / Lx scaled by the pressure response factor Kp
+# # eps_y = p_amp / (rho * g * Ly) #nondimensionalzing the pressure amplitude is not circular like dpdx or dpdy because it does not depend on the wavenumber
+# eps_x = dpdx / (rho * g)
+# eps_y = dpdy / (rho * g)
+#
+# #open the das data from the same day
+# # das_data_path = './data/for_OSU_processed/20260601/Processed_data_2026_06_01_00_05_01.h5'
+# das_data_path = './data/for_OSU_processed/20260611/Processed_data_2026_06_11_00_05_01.h5'
+# das_freqs, das_PSD = get_DAS_PSD(das_data_path, nperseg=256)
+# das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
+# das_amplitude = np.sqrt(np.trapezoid(das_PSD[das_wave_band, :], das_freqs[das_wave_band], axis=0)) #single number summarizing the total energy across the entire band. Bulk quantity
+#
+# #correlate dpdx and dpdy with the DAS amplitude - pearson spatial correlation
+# mask = np.isfinite(das_amplitude) & np.isfinite(dpdx)
+# matrix = np.corrcoef(np.abs(dpdx[mask]), das_amplitude[mask]) #how does DAS amplitude respond to the magnitude of the pressure gradient?
+#
+# #open the interpolated grid for debugging
+# channel_grid = pd.read_pickle('./data/frf_awac/channel_grid.pkl')
+# channel_x = channel_grid['xFRF']
+# z = channel_grid['z']
+#
+# # plt.scatter(channel_x, z)
+# # plt.show()
+# # plt.close('all')
+#
+# #PLOTTING
+# #plot pressure gradients
+# fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+#
+# axes[0].scatter(channels, dpdx, color='blue', s=3)
+# # axes[0].set_xlabel('Channel Number')
+# axes[0].set_ylabel('dp/dx (Pa/m)')
+#
+# axes[1].scatter(channels, dpdy, color='red', s=3)
+# # axes[1].set_xlabel('Channel Number')
+# axes[1].set_ylabel('dp/dy (Pa/m)')
+#
+# fig.suptitle('Bulk Pressure Gradient v. Channel Number')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/bulkPresGrad.png')
+# plt.show()
+# plt.close('all')
+#
+# # #plot pressure amplitude
+# # fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+# #
+# # axes[0].scatter(channels, eps_x, color='blue', s=3)
+# # axes[0].set_xlabel('Channel Number')
+# # axes[0].set_ylabel('ε_x (Hs/Lx)')
+# #
+# # axes[1].scatter(channels, eps_y, color='red', s=3)
+# # axes[1].set_xlabel('Channel Number')
+# # axes[1].set_ylabel('ε_y (Hs/Ly)')
+# #
+# # fig.suptitle('Bulk Pressure Amplitude v. Channel Number')
+# #
+# # plt.tight_layout()
+# # plt.show()
+# # plt.close('all')
+#
+# #plot bulk das amplitude
+# fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+#
+# axes.plot(channels, das_amplitude, color='blue')
+# axes.set_xlabel('Channel Number')
+# axes.set_ylabel('Phase Shifts (rad)')
+# axes.set_title('Bulk DAS Amplitude Over Channels')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/bulkDasAMP.png')
+# plt.show()
+# plt.close('all')
 
-dirspec = data['awac_corrected_directional_spectrum']
-bad_channels = np.all(np.isnan(dirspec), axis=(1, 2)) #find which channels are bad - nans
-dirspec_clean = np.nan_to_num(dirspec, nan=0.0) #of shape (N_channels, N_freqs, N_dirs)
-freqs = data['awac_frequency_bins']
-dirs = data['awac_directional_bins']
-h = data['water_depth'] #water depth should be corrected for tides.
-channels = data['channel_number']
-
-df = np.gradient(freqs)
-dtheta = np.gradient(dirs)
-
-#pull out the representative wave for each channel
-#significant wave height - Hmo
-m0 = np.trapezoid(np.trapezoid(dirspec_clean, dirs, axis=-1), freqs, axis=-1)
-Hs = 4.004 * np.sqrt(m0)
-Hs[bad_channels] = np.nan
-
-#frequency spectrum
-S_f = np.trapezoid(dirspec_clean, dirs, axis=-1)
-#direction spectrum
-S_theta = np.trapezoid(dirspec_clean, freqs, axis=1)
-
-#peak frequency   #TODO: careful if the spectrum is not narrow banded here.
-fp_idx = np.argmax(S_f, axis=1) #indices of the peak frequency bin
-fp = freqs[fp_idx] #peak frequency at each channel
-fp[bad_channels] = np.nan #restore invalid channels
-
-#peak direction
-theta_p_idx = np.argmax(S_theta, axis=1) #indices of the peak direction bin  #TODO: check to make sure that refraction is working on non shore normal days
-theta_p = dirs[theta_p_idx] #peak direction at each channel  #TODO: does this need to be converted back to what we wanted
-theta_p[bad_channels] = np.nan #restore invalid channels
-
-#pull the DAS channel grid to get the depth and calculate local wavenumber at each channel
-Tp = 1/fp #peak period
-k = wavenumber(h, Tp) #local wave number
-
-Kp = 1 / (np.cosh(k*h)) #pressure response factor
-
-#pressure gradient amplitude in x and y build from bulk statistics
-rho = 1025 #kg/m**3
-g = 9.81 #m/s**2
-
-# rotate to shore-normal frame and flip to propagation direction
-theta_p_local = theta_p - 71.8535 #convert to xFRF shore-normal orientation
-theta_p_prop = theta_p_local + 180  #converts waves coming from direction to waves propagating towards the shoreline
-theta_p_rad = np.deg2rad(theta_p_local) #convert degrees to radians
-
-dpdx = (0.5 * rho * g * Hs * k * np.cos(theta_p_rad) * Kp) / 10000 #units of decibars/m - fluid pressure is increasing/decreasing for every space along the x grid.
-dpdy = -(0.5 * rho * g * Hs * k * np.sin(theta_p_rad) * Kp) / 10000 #units of decibars/m - negative because positive xFRF is to the North (to the left of the shore normal transect)
-#a wave coming from the south (dirs=180 - 71.8535) gives a positive dpdy and a wave from the north (dirs=0 - 71.8535) gives a negative dpdy
-
-#plot pressure gradients
-fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-
-axes[0].scatter(channels, dpdx, color='blue', s=3)
-axes[0].set_xlabel('Channel Number')
-axes[0].set_ylabel('dp/dx (dbar/m)')
-
-axes[1].scatter(channels, dpdy, color='red', s=3)
-axes[1].set_xlabel('Channel Number')
-axes[1].set_ylabel('dp/dy (dbar/m)')
-
-fig.suptitle('Bulk Pressure Gradient v. Channel Number')
-
-plt.tight_layout()
-plt.show()
-plt.close('all')
 
 
-#TODO: compare the pressure gradients to the wave directions.
-#TODO: compute the pressure amplitude (non gradient) and normalize by the respective wavelength - then look at components (this should be a nondimensional "steepness" parameter)
+
+
+#TODO: possible problems with the bathymetry - may need to find where the original das signal jumps from 0 to something and define the shoreline there
+
+
+'''CHECK OF CALIBRATION - SHOALING AND REFRACTION'''
+# #open calibrated file
+# # data_path = './data/frf_awac/calibration_coefficients/Calib_2026-06-01_00_05_01.npz'  #gets the data from one 5 minute DAS file - SHORE NORMAL
+# # data_path = './data/frf_awac/calibration_coefficients/Calib_2026-06-08_23_00_01.npz' #WAVES FROM THE NORTH
+# data_path = './data/frf_awac/calibration_coefficients/Calib_2026-06-07_00_05_01.npz' #WAVES FROM THE SOUTH
+# data_struc = np.load(data_path, allow_pickle=True)
+# data = data_struc['arr_0'].item()
+#
+# dirspec = data['awac_corrected_directional_spectrum']
+# bad_channels = np.all(np.isnan(dirspec), axis=(1, 2)) #find which channels are bad - nans
+# dirspec_clean = np.nan_to_num(dirspec, nan=0.0) #of shape (N_channels, N_freqs, N_dirs)
+# freqs = data['awac_frequency_bins']
+# dirs = data['awac_directional_bins']
+# h = data['water_depth'] #water depth should be corrected for tides.
+# channels = data['channel_number']
+#
+# df = np.gradient(freqs)
+# dtheta = np.gradient(dirs)
+#
+# #pull out the representative wave for each channel
+# #significant wave height - Hmo
+# awac_wave_band = (freqs >= 0.05) & (freqs <= 0.3)
+# m0 = np.trapezoid(np.trapezoid(dirspec_clean[:, awac_wave_band, :], dirs, axis=-1), freqs[awac_wave_band], axis=-1)
+# Hs = 4.004 * np.sqrt(m0)
+# Hs[bad_channels] = np.nan
+#
+# #frequency spectrum
+# S_f = np.trapezoid(dirspec_clean, dirs, axis=-1)
+# #direction spectrum
+# S_theta = np.trapezoid(dirspec_clean, freqs, axis=1)
+#
+# #peak frequency
+# fp_idx = np.argmax(S_f, axis=1) #indices of the peak frequency bin
+# fp = freqs[fp_idx] #peak frequency at each channel
+# fp[bad_channels] = np.nan #restore invalid channels
+#
+# #peak direction
+# theta_p_idx = np.argmax(S_theta, axis=1) #indices of the peak direction bin
+# theta_p = dirs[theta_p_idx] #peak direction at each channel
+# theta_p[bad_channels] = np.nan #restore invalid channels
+#
+# #pull the DAS channel grid to get the depth and calculate local wavenumber at each channel
+# Tp = 1/fp #peak period
+# k = wavenumber(h, Tp) #local wave number
+#
+# Kp = 1 / (np.cosh(k*h)) #pressure response factor
+#
+# #pressure gradient amplitude in x and y build from bulk statistics
+# rho = 1025 #kg/m**3
+# g = 9.81 #m/s**2
+#
+# # rotate to shore-normal frame and flip to propagation direction
+# theta_p_local = theta_p - 71.8535 #convert to xFRF shore-normal orientation
+#
+# #REFRACTION
+# plt.plot(channels, theta_p_local)
+# plt.xlabel('channel number')
+# plt.ylabel('degrees away from shore normal (0)')
+# plt.show()
+# plt.close('all')
+#
+# #SHOALING
+# plt.plot(channels, Hs)
+# plt.xlabel('channel number')
+# plt.ylabel('Significant Wave Height (Hmo)')
+# plt.show()
+# plt.close('all')
+
+'''CHECK OF CALIBRATION COEFFICIENT - S_eta(x, f)'''
+#use the calibration to check the spectral area matching at different channels in the cross-shore - like marcela's thesis
+
+
+'''WHAT CHANNEL DOES DAS DATA INITIALLY COME IN AT - WHAT XFRF/YFRF/Z'''
+# das_data_path = './data/for_OSU_processed/20260611/Processed_data_2026_06_11_00_05_01.h5'
+# strain, time = load_processedData(das_data_path)
+# phase = strain2phase(strain)
+#
+# time_array = time2dateTime(time)
+#
+# # waterFall(phase, time_array, channel_spacing=1.6, channel_start=0, channel_end=phase.shape[1], savepath='./figures/waterFall')
+#
+# #Find the channel at which the signal
+# dphasedx = np.diff(phase[300, :])
+#
+# spike, _ = find_spike(dphasedx, sigma=7)
+#
+# #rolling variance, when it exceeds a certain value - mark it jump to a real signal
+#
+# channels = range(phase.shape[1])
+# #
+# plt.plot(channels[:-1], dphasedx)
+# plt.show()
+# plt.close('all')
+
 
