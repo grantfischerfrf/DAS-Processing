@@ -71,7 +71,7 @@ def get_AWAC_data(file_path):
     data_300 = xr.open_dataset(file_path)
     # print(list(data_300.keys())) #list all data variables, each variable should have a time array attached to it
 
-    dirspec = data_300['directionalWaveEnergyDensity']  # directional spectrum
+    dirspec = data_300['directionalWaveEnergyDensity']  # sea surface wave directional energy spectrum
     # PorAST = data_300['PorAST'].values #PUV or SUV mode
     gaugeDepth = data_300['gaugeDepth']  # depth from the water surface to the top of the gauge
     gaugeElevation = data_300['gaugeElevation']  # gauge vertical position in NAVD88
@@ -273,7 +273,6 @@ def compute_calibration_coefficient(files_to_process,
                                 Ks ** 2) * J  # apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
 
                     theta1_from_deg = np.rad2deg(theta1) + 71.8535 #convert radians to degrees -> convert back to original direction bin reference (true north)
-                    theta1_abs = theta1_from_deg + 71.8535 # convert back to original direction bin reference (true north)
 
                     #wrap back to 0-360 original direction convention
                     theta1_from_deg %= 360
@@ -284,7 +283,7 @@ def compute_calibration_coefficient(files_to_process,
                     S1_local[
                         i, j_new] += S1  # shape(n_freq, n_dir) - store the local spectrum (at a particular channel) for this frequency and direction
 
-            # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed
+            # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed - goda parameterization
             m0_per_freq = np.nansum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
             m0 = np.nansum(m0_per_freq * df)  # integrate over frequency to get the total variance of the sea surface elevation spectrum
 
@@ -350,7 +349,7 @@ def compute_calibration_coefficient(files_to_process,
 
         # save the data
         np.savez_compressed(
-            f'{save_folder}/Calib_{das_start_time.tolist().strftime("_%Y-%m-%d_%H_%M_%S")}.npz',
+            f'{save_folder}/Calib{das_start_time.tolist().strftime("_%Y-%m-%d_%H_%M_%S")}.npz',
             save_dict)
         # tqdm.write(f'Saved calibration coefficient for {das_start_time.tolist().strftime("%Y-%m-%d %H:%M:%S")}')
 
@@ -400,6 +399,7 @@ def process_worker(files_to_process, save_folder, DAS_XYZ_path, AWAC1_path, AWAC
 
 #TODO: check the code for errors. compare the spectra derived wave heights to measured wave heights.
 #TODO: burst level calibration - because the AWAC only records pressure spectra for a 34 minute burst (26 minute off)
+#TODO: need to add the 600m AWAC in as well!
 
 
 #TODO: check whether the AWAC is getting its spectra from SUV or AUV

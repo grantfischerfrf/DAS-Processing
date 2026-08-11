@@ -100,7 +100,7 @@ def waterFall(data, time, channel_spacing, channel_start:int, channel_end:int, s
     cbar.set_label("Strain")
     plt.tight_layout()
     plt.savefig(savepath + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '.png')
-    # plt.show()
+    plt.show()
     plt.close('all')
 
 
