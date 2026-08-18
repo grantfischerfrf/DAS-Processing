@@ -1,5 +1,6 @@
 import numpy as np
 from datetime import datetime, timezone, timedelta
+from collections import defaultdict
 import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
@@ -10,7 +11,7 @@ from FRF_DAS_plots import load_processedData, waterFall
 from scipy.signal import welch
 from scipy import stats
 from scipy.stats import binned_statistic
-from Empirical_Calibration import get_DAS_PSD
+from Empirical_Calibration import get_DAS_PSD, get_DAS_PSD_burst, parse_das_timestamp
 import scipy
 from tqdm import tqdm
 from scipy.interpolate import interp1d, LinearNDInterpolator
@@ -18,7 +19,14 @@ from scipy.interpolate import interp1d, LinearNDInterpolator
 from geoprocess import ncsp2FRF
 
 
-
+def get_burst_files(all_paths, start_time, burst_duration_min=35):
+    """Pull all files whose timestamp falls within [start_time, start_time + burst_duration) """
+    burst_end = start_time + timedelta(minutes=burst_duration_min)
+    burst_files = [
+        f for f in all_paths
+        if start_time <= sequence_number(f) < burst_end
+    ]
+    return sorted(burst_files, key=sequence_number)
 
 def find_spike(signal, sigma=5):
     # find where a signal shoots up from a spike - sigma is the sliding window size that the variance is calculated over.
@@ -756,9 +764,9 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 '''AWAC PSD_eta to PSD_pd'''
 
-# #data is analyzed in 34 minute bursts on the hour.
-#
-# #300m cross-shore location
+#data is analyzed in 34 minute bursts on the hour.
+
+#300m cross-shore location
 # data_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
 # data_300 = xr.open_dataset(data_path_300)
 # # print(list(data_300.keys())) #list all data variables, each variable should have a time array attached to it
@@ -807,21 +815,13 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # z_col = z[:, None] # (ntime, 1)
 # k = wavenumber(h_col, T[None, :], g) #k is of shape (ntime, nfrequency)
 #
-# Kp = (np.cosh(k * (h_col + z_col))) / (np.cosh(k * h_col)) #Pressure response factor - kp  #TODO: This will need to be recalculated for each depth h (same with the wavenumber)
+# Kp = (np.cosh(k * (h_col + z_col))) / (np.cosh(k * h_col)) #Pressure response factor - kp
 #
 # #integrate the directional spectrum over the direction bins for broadcasting
 # S_f_eta = np.sum(S_f_theta_eta, axis=-1) * dtheta
 #
 # S_f_p = (rho * g)**2 * Kp**2 * S_f_eta #power spectral density of the wave induced dynamic pressure fluctuations
 # # has shape (N_time (samples), frequency bins)
-
-
-#TODO: we are given a wave directional spectrum at a certain location. First this spectrum needs to be broken down into individual components (f, theta) and shoaled/ refracted using the conservation of energy flux
-#TODO: Then integrate over directional bins to collapse to a 1d power spectrum. correct the pressure response factor for the shoaled f and h. Then create a synthetic pressure spectrum using linear theory for each location
-#TODO: repeat this process at each time.
-
-#TODO: You will need to find where each DAS channel exists in xFRF space - this is where geolocation would be nice.
-
 
 
 '''LARC SURVEY DATA'''
@@ -1447,69 +1447,83 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 
 '''CHECK OF CALIBRATION COEFFICIENT - S_eta(x, f)'''
-# #use the calibration to check the spectral area matching at different channels in the cross-shore
-# #TODO: remember that the lack of good bathymetry will be present in this as well. The DAS spectrum will vary from the shoaled awac spectrum
-# #CROSS-SHORE CHANNEL CLOSE TO THE AWAC
-# channel = 1000
+#use the calibration to check the spectral area matching at different channels in the cross-shore
+#TODO: remember that the lack of good bathymetry will be present in this as well. The DAS spectrum will vary from the shoaled awac spectrum
+#TODO: As I go into the nearshore, the spectral peak of the AWAC increasingly overestimates the spectral peak of the DAS. This is indicative of the energy dissipation term being inaccurate.
+#TODO: The alongshore spectrum is also junk - probably need to isolate only the alongshore components of wave energy for this
+#TODO: I am current comparing the entire spectrum to the DAS measurements. If the cable only response to along-cable pressure (gradients) then I need to isolate the components of the spectra.
+
+#CROSS-SHORE CHANNEL CLOSE TO THE AWAC
+channel = 1000
 #
-# #pull DAS spectrum
-# das_data_path = './data/for_OSU_processed/20260611/Processed_data_2026_06_11_00_05_01.h5'
+#pull DAS spectrum
+# das_data_path = './data/for_OSU_processed/20260611/Processed_data_2026_06_11_00_10_01.h5' #one 5 minute file
+all_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+start_time = datetime(2026, 6, 11, 0, 0, 0)
+
+burst_files = get_burst_files(all_paths, start_time, 35)
+
 # das_freqs, das_PSD = get_DAS_PSD(das_data_path, nperseg=256)
-# das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)
-# das_PSD = das_PSD[das_wave_band, :]
-# das_freqs = das_freqs[das_wave_band]
-#
-# #pull AWAC spectrum
-# awac_data_path = './data/frf_awac/calibration_coefficients/Calib_2026-06-11_00_05_01.npz'
-# awac_data = np.load(awac_data_path, allow_pickle=True)
-# awac_data = awac_data['arr_0'].item()
-#
-# C = awac_data['calibration_coefficient']
-# awac_dirspec = awac_data['awac_corrected_directional_spectrum']
-# awac_freqs = awac_data['awac_frequency_bins']
-# awac_dirs = awac_data['awac_directional_bins']
-# h = awac_data['water_depth']
-# calibration_flag = awac_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
-#
-# #correct DAS spectrum to convert from phase_shifts to sea surface
-# Sp_f_das = (das_PSD[:, channel] * C[channel]) / 10000 #the calibration coefficient is for a pressure spectra - convert to dbars
-#
-# #integrate awac directional spectrum over directional bins
-# awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3)
-# awac_freqs = awac_freqs[awac_wave_band]
-# Seta_f_awac = np.trapezoid(awac_dirspec[:, awac_wave_band, :], awac_dirs, axis=-1).T
-#
-# #convert both awac and das SSE spectrum to pressure spectrum.
-# # define constants
-# rho = 1025
-# g = 9.81
-# h0 = h[channel]
-#
-# awac_T = 1 / awac_freqs
-# awac_k = wavenumber(h0, awac_T) #wavenumber at each period / frequency bin
-# awac_Kp = 1 / np.cosh(awac_k * h0) #pressure response factor at each wavenumber
-#
-# das_T = 1 / das_freqs
-# das_k = wavenumber(h0, das_T)
-# das_Kp = 1 / np.cosh(das_k * h0)
-#
-# Seta_f_das = Sp_f_das / (rho * g * das_Kp)**2
-# Sp_f_awac = (Seta_f_awac[:, channel] * (rho * g * awac_Kp)**2) / 10000 #convert pascals to decibars
-#
-# #plot the spectra on the same plot
-# fig, axes = plt.subplots(1,1, figsize=(12, 8))
-#
-# axes.plot(awac_freqs, Sp_f_awac, color='blue', label='awac pressure')
-# axes.plot(das_freqs, Sp_f_das, color='red', label='DAS-derived')
-# # axes.plot(awac_freqs, Seta_f_awac[:, channel], color='blue')
-# # axes.plot(das_freqs, Seta_f_das, color='red')
-# # axes2 = axes.twinx()
-# # axes2.plot(das_freqs, Sp_f_das, color='red', label='DAS - derived')
-# axes.legend()
-#
-# plt.tight_layout()
-# plt.show()
-# plt.close('all')
+das_freqs, das_PSD = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2)
+das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)
+das_PSD = das_PSD[das_wave_band, :]
+das_freqs = das_freqs[das_wave_band]
+
+#pull AWAC spectrum
+awac_data_path = './data/frf_awac/calibration_coefficients_burst/Calib_2026-06-11_00_00_00.npz'
+awac_data = np.load(awac_data_path, allow_pickle=True)
+awac_data = awac_data['arr_0'].item()
+
+C = awac_data['calibration_coefficient']
+awac_dirspec = awac_data['awac_corrected_directional_spectrum']
+awac_freqs = awac_data['awac_frequency_bins']
+awac_dirs = awac_data['awac_directional_bins']
+h = awac_data['water_depth']
+calibration_flag = awac_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+#correct DAS spectrum to convert from phase_shifts to sea surface
+Sp_f_das = (das_PSD[:, channel] * C[channel]) #the calibration coefficient is for a pressure spectra
+
+#integrate awac directional spectrum over directional bins
+awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3)
+awac_freqs = awac_freqs[awac_wave_band]
+Seta_f_awac = np.trapezoid(awac_dirspec[:, awac_wave_band, :], awac_dirs, axis=-1).T
+
+#convert both awac and das SSE spectrum to pressure spectrum.
+# define constants
+rho = 1025
+g = 9.81
+h0 = h[channel]
+
+awac_T = 1 / awac_freqs
+awac_k = wavenumber(h0, awac_T) #wavenumber at each period / frequency bin
+awac_Kp = 1 / np.cosh(awac_k * h0) #pressure response factor at each wavenumber
+
+das_T = 1 / das_freqs
+das_k = wavenumber(h0, das_T)
+das_Kp = 1 / np.cosh(das_k * h0)
+
+Seta_f_das = Sp_f_das / (rho * g * das_Kp)**2
+Sp_f_awac = (Seta_f_awac[:, channel] * (rho * g * awac_Kp)**2) / 1e8 #convert pascals to decibars
+
+#plot the spectra on the same plot
+fig, axes = plt.subplots(1,1, figsize=(12, 8))
+
+axes.plot(awac_freqs, Sp_f_awac, color='blue', label='awac pressure')
+axes.plot(das_freqs, Sp_f_das / 1e8, color='red', label='DAS-derived') #- convert to dbars (must square for units)
+# axes.plot(awac_freqs, Seta_f_awac[:, channel], color='blue')
+# axes.plot(das_freqs, Seta_f_das, color='red')
+# axes2 = axes.twinx()
+# axes2.plot(das_freqs, Sp_f_das, color='red', label='DAS - derived')
+axes.set_xlabel('Frequency (Hz)')
+axes.set_ylabel('Pressure PSD (dbar²/Hz)')
+axes.set_title(f'Spectral Area Matching; Channel: {channel}, Time: {start_time.strftime("%Y-%m-%d %H:%M:%S")}')
+axes.legend()
+
+plt.tight_layout()
+plt.savefig(f'./figures/area_matching/channel_{channel}_time_{start_time}_area.png')
+plt.show()
+plt.close('all')
 
 
 
@@ -1668,12 +1682,12 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 '''DAS SIGNAL V WAVE DIRECTION ACROSS TIME'''
 das_file_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number) #all processed DAS files
-calibration_file_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients/*'), key=sequence_number)
+calibration_file_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst/*'), key=sequence_number)
 
 start_time = datetime(2026, 6, 1, 0, 0, 0)
 end_time = datetime(2026, 6, 15, 23, 59, 59)
 orientation = 'alongshore' #alongshore or cross_shore oriented channel
-channel = 700 #channel to investigate
+channel = 750 #channel to investigate
 
 rho = 1025 #kg/m**3
 g = 9.81 #m/s**2
@@ -1688,19 +1702,53 @@ g = 9.81 #m/s**2
 #     if start_time <= sequence_number(f) <= end_time
 # ]
 #
-# dpdx_array = np.zeros(len(das_file_paths)) #empty arrays to fill with data
-# dpdy_array = np.zeros(len(das_file_paths))
-# das_amplitude_array = np.zeros(len(das_file_paths))
-# timestamps = []
-# eps_x_array = np.zeros(len(das_file_paths))
-# eps_y_array = np.zeros(len(das_file_paths))
-# theta_incident = np.full(len(das_file_paths), np.nan)
-# bulk_Hs = np.full(len(das_file_paths), np.nan)
+# #get burst groups for DAS
+# # group into top of the hour 35 minute bursts of files
+# BURST_DURATION_MIN = 35
+# MIN_FILES_PER_BURST = 6  # accept bursts with 6 or 7 files (allows for edge-of-dataset partial hours)
+# BURST_TOLERANCE_SEC = 0 #tolerance in seconds
 #
-# for i, (das_file, calibration_file) in enumerate(
+# bursts = defaultdict(list)  #TODO: Must explain everything this does.
+# for f in das_file_paths:
+#     ts = parse_das_timestamp(f)
+#     if ts is None:
+#         continue
+#     burst_start = ts.replace(minute=0, second=0, microsecond=0)
+#     burst_end = burst_start + timedelta(minutes=BURST_DURATION_MIN, seconds=BURST_TOLERANCE_SEC)
+#     if burst_start <= ts < burst_end:
+#         bursts[burst_start].append(f)
+#
+# # keep only complete bursts, and sort by time
+# complete_bursts = {
+#     b: sorted(files, key=sequence_number)
+#     for b, files in bursts.items()
+#     if len(files)  >= MIN_FILES_PER_BURST
+# }
+# burst_items = sorted(complete_bursts.items())  # list of (burst_start, [files]) tuples
+#
+# dpdx_array = np.zeros(len(calibration_file_paths)) #empty arrays to fill with data
+# dpdy_array = np.zeros(len(calibration_file_paths))
+# das_amplitude_array = np.zeros(len(calibration_file_paths))
+# timestamps = []
+# eps_x_array = np.zeros(len(calibration_file_paths))
+# eps_y_array = np.zeros(len(calibration_file_paths))
+# theta_incident = np.full(len(calibration_file_paths), np.nan)
+# bulk_Hs = np.full(len(calibration_file_paths), np.nan)
+#
+# #SINGLE FILES
+# # for i, (das_file, calibration_file) in enumerate(
+# #     tqdm(
+# #         zip(das_file_paths, calibration_file_paths),
+# #         total=len(das_file_paths),
+# #         colour='yellow'
+# #     )
+# # ):
+#
+# #BURST FILES
+# for i, ((burst_start, burst_files), calibration_file) in enumerate(
 #     tqdm(
-#         zip(das_file_paths, calibration_file_paths),
-#         total=len(das_file_paths),
+#         zip(burst_items, calibration_file_paths),
+#         total=len(calibration_file_paths),
 #         colour='yellow'
 #     )
 # ):
@@ -1759,7 +1807,7 @@ g = 9.81 #m/s**2
 #     # Kp = 1 / (np.cosh(k*h)) #pressure response factor
 #
 #     #pressure gradient amplitude in x and y build from bulk statistics
-#     #pressure gradients - remember x increases offshore.  #FIXME: narrowband
+#     #pressure gradients - remember x increases offshore.
 #     # dpdx = (0.5 * rho * g * Hs * k * np.cos(theta_p_rad) * Kp) / 10000 #units of decibars/m - fluid pressure is increasing/decreasing for every space along the x grid.
 #     # dpdy = -(0.5 * rho * g * Hs * k * np.sin(theta_p_rad) * Kp) / 10000 #units of decibars/m - negative because positive xFRF is to the North (to the left of the shore normal transect)
 #     #a wave coming from the south (dirs=180 - 71.8535) gives a positive dpdy and a wave from the north (dirs=0 - 71.8535) gives a negative dpdy
@@ -1784,8 +1832,8 @@ g = 9.81 #m/s**2
 #     k_f = np.array([wavenumber(h, 1/f) for f in freqs[awac_wave_band]])
 #     Kp_f = 1 / np.cosh(k_f * h)
 #
-#     theta_p_local = dirs - 71.8535
-#     dirs_rad = np.deg2rad(theta_p_local + 180)  # rotate + flip to propagation
+#     dirs_local = dirs - 71.8535
+#     dirs_rad = np.deg2rad(dirs_local + 180)  # rotate + flip to propagation
 #
 #     S_f_band = dirspec_clean[awac_wave_band, :] #define sse spectrum over wave band
 #
@@ -1795,12 +1843,12 @@ g = 9.81 #m/s**2
 #     S_dpdx_f = np.trapezoid(S_dpdx, dirs, axis=1) #integrate over direction
 #     S_dpdy_f = np.trapezoid(S_dpdy, dirs, axis=1)  # integrate over direction
 #
-#     dpdx = np.sqrt(np.trapezoid(S_dpdx_f, freqs[awac_wave_band])) / 10000 #integrate over frequency and convert to dbar/m
+#     dpdx = np.sqrt(np.trapezoid(S_dpdx_f, freqs[awac_wave_band])) / 10000 #integrate over frequency and convert to dbar/m  #TODO: do I need to square the 10000 here?
 #     dpdy = np.sqrt(np.trapezoid(S_dpdy_f, freqs[awac_wave_band])) / 10000  # integrate over frequency and convert to dbar/m
 #
 #     #open the das data from the same day
-#     das_data_path = das_file
-#     das_freqs, das_PSD = get_DAS_PSD(das_data_path, nperseg=256)
+#     das_data_path = burst_files
+#     das_freqs, das_PSD = get_DAS_PSD_burst(das_data_path, nperseg=256, sampling_frequency=2)
 #     das_PSD = das_PSD[:, channel]
 #     das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
 #     das_amplitude = np.sqrt(np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band], axis=0)) #single number summarizing the total energy across the entire band. Bulk quantity - currently broadband
@@ -1822,9 +1870,9 @@ g = 9.81 #m/s**2
 #     'Hs':bulk_Hs
 # }
 #
-# np.savez(f'./data/frf_awac/Channel_{channel}_wavedir_vars.npz', data)
+# np.savez(f'./data/frf_awac/wave_direction/Channel_{channel}_wavedir_vars_burst.npz', data)
 
-saved_data = np.load(f'./data/frf_awac/Channel_{channel}_wavedir_vars.npz', allow_pickle=True)
+saved_data = np.load(f'./data/frf_awac/wave_direction/Channel_{channel}_wavedir_vars_burst.npz', allow_pickle=True)
 
 saved_data = saved_data['arr_0'].item()
 
@@ -1842,26 +1890,33 @@ dp_mag = np.sqrt(dpdx_array**2 + dpdy_array**2)
 
 #normalize the das amplitude
 if orientation == 'cross_shore':
-    das_norm = das_amplitude_array / np.abs(dpdx_array)
+    grad = np.abs(dpdx_array)
 if orientation == 'alongshore':
-    das_norm = das_amplitude_array / np.abs(dpdy_array)
+    grad = np.abs(dpdy_array)
+
+denom_mask = grad > 0.05 * np.nanmax(grad)  # drop near-zero-gradient bursts
+das_norm = np.where(denom_mask, das_amplitude_array / grad, np.nan)
+
+mask = np.isfinite(grad) & np.isfinite(das_amplitude_array)
+r, p = stats.pearsonr(grad[mask], das_amplitude_array[mask])
+slope, intercept, r_lin, p_lin, se = stats.linregress(grad[mask], das_amplitude_array[mask])
+
+x_fit = np.linspace(np.nanmin(grad[mask]), np.nanmax(grad[mask]))
+y_fit = slope * x_fit + intercept
 
 #MASKS FOR ISOLATING WAVE HEIGHT AND DIRECTION
-theta_mask = (np.abs(theta_incident) <= 10)
+theta_mask = (np.abs(theta_incident) >= 10)
 # small_Hs_mask = (bulk_Hs < 0.75)
 # mid_Hs_mask = (0.75 <= bulk_Hs) & (bulk_Hs < 1.25)
 # large_Hs_mask = (1.25 <= bulk_Hs)
 
 #pearson correlation
-r, p = stats.pearsonr(np.abs(dpdx_array), das_amplitude_array)
-slope, intercept, r_lin, p_lin, se = stats.linregress(np.abs(dpdx_array), das_amplitude_array)
 print(f"r={r:.2f}, p={p:.4f}, slope={slope:.3f}")
 
 #bin by wave height
-bin_edges = np.arange(-90, 91, 5)
-med, edges, _ = binned_statistic(theta_incident, das_amplitude_array, statistic='median', bins=bin_edges)
-centers = 0.5*(edges[:-1]+edges[1:])
-
+# bin_edges = np.arange(-90, 91, 5)
+# med, edges, _ = binned_statistic(theta_incident, das_amplitude_array, statistic='median', bins=bin_edges)
+# centers = 0.5*(edges[:-1]+edges[1:])
 
 #WAVE DIRECTION AND SIGNIFICANT WAVE HEIGHT
 fig, axes = plt.subplots(2, 1, figsize=(12, 8))
@@ -1935,7 +1990,7 @@ plt.close('all')
 fig, axes = plt.subplots(1, 1, figsize=(14, 12))
 
 sc = axes.scatter(theta_incident, das_amplitude_array, c=bulk_Hs, s=5)
-axes.plot(centers, med, color='black', linewidth=2, zorder=5, label='Binned Median')
+# axes.plot(centers, med, color='black', linewidth=2, zorder=5, label='Binned Median')
 axes.set_xlabel('Incident Wave Direction (degrees)')
 axes.set_ylabel('DAS Amplitude (rad)')
 axes.set_title('Incident Wave Direction v DAS Response')
@@ -1967,31 +2022,29 @@ plt.close('all')
 
 
 #PRESSURE GRADIENT V DAS AMPLITUDE
-x_fit = np.linspace(np.nanmin(np.abs(dpdx_array)), np.nanmax(np.abs(dpdx_array)))
-y_fit = slope * x_fit + intercept
 fig, axes = plt.subplots(1, 1, figsize=(14, 12))
 
 if orientation == 'cross_shore':
-    axes.scatter(np.abs(dpdx_array[theta_mask]), das_amplitude_array[theta_mask], c=theta_incident[theta_mask], s=25, marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
-    sc = axes.scatter(np.abs(dpdx_array), das_amplitude_array, c=theta_incident, s=5, cmap='coolwarm', vmin=-60, vmax=60)
-    axes.plot(x_fit, y_fit, color='magenta', linewidth=2, linestyle='--',
-              label=f'fit: slope={slope:.3f}, $r$={r:.2f}, $p$={p:.2e}')
+    # axes.scatter(np.abs(dpdx_array[theta_mask]), das_amplitude_array[theta_mask], c=np.abs(theta_incident)[theta_mask], s=25, marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
+    sc = axes.scatter(np.abs(dpdx_array[theta_mask]), das_amplitude_array[theta_mask], c=np.abs(theta_incident[theta_mask]), s=15, cmap='Reds')#, vmin=-60, vmax=60)
+    # axes.plot(x_fit, y_fit, color='magenta', linewidth=2, linestyle='--',
+    #           label=f'fit: slope={slope:.3f}, $r$={r:.2f}, $p$={p:.2e}')
     axes.set_xlabel('|dP/dx| (dbar/m)')
     axes.set_title('Magnitude of DAS Response v Cross-Shore Pressure Gradient Magnitude')
 
 if orientation == 'alongshore':
-    axes.scatter(np.abs(dpdx_array[theta_mask]), das_amplitude_array[theta_mask], c=theta_incident[theta_mask], s=10,
-                 marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
-    sc = axes.scatter(np.abs(dpdy_array), das_amplitude_array, c=theta_incident, s=5, cmap='PiYG', vmin=-60, vmax=60)
-    axes.plot(x_fit, y_fit, color='black', linewidth=2, linestyle='--',
-              label=f'fit: slope={slope:.3f}, $r$={r:.2f}, $p$={p:.2e}')
+    # axes.scatter(np.abs(dpdy_array[theta_mask]), das_amplitude_array[theta_mask], c=np.abs(theta_incident)[theta_mask], s=10,
+    #              marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
+    sc = axes.scatter(np.abs(dpdy_array), das_amplitude_array, c=np.abs(theta_incident), s=5, cmap='Reds')#, vmin=-60, vmax=60)
+    # axes.plot(x_fit, y_fit, color='magenta', linewidth=2, linestyle='--',
+    #           label=f'fit: slope={slope:.3f}, $r$={r:.2f}, $p$={p:.2e}')
     axes.set_xlabel('|dP/dy| (dbar/m)')
     axes.set_title('Magnitude of DAS Response v Alongshore Pressure Gradient Magnitude')
 
 axes.set_ylabel('DAS Amplitude (rad)')
 axes.set_facecolor('black')
 axes.legend()
-fig.colorbar(sc, ax=axes, label='Incident Wave Direction', cmap='coolwarm')
+fig.colorbar(sc, ax=axes, label='Incident Wave Direction', cmap='Reds')
 
 plt.tight_layout()
 if orientation == 'cross_shore':
@@ -2006,16 +2059,16 @@ plt.close('all')
 fig, axes = plt.subplots(1, 1, figsize=(14, 12))   #TODO: add the x fit median line to this as well
 
 if orientation == 'cross_shore':
-    axes.scatter(np.abs(dpdx_array[theta_mask]), das_norm[theta_mask], c=theta_incident[theta_mask], s=25,
-                 marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
-    sc = axes.scatter(np.abs(dpdx_array), das_norm, c=theta_incident, s=5, cmap='coolwarm', vmin=-60, vmax=60)
+    # axes.scatter(np.abs(dpdx_array[theta_mask]), das_norm[theta_mask], c=theta_incident[theta_mask], s=25,
+    #              marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
+    sc = axes.scatter(np.abs(dpdx_array[theta_mask]), das_norm[theta_mask], c=np.abs(theta_incident[theta_mask]), s=15, cmap='Reds')#, vmin=-60, vmax=60)
     axes.set_xlabel('|dP/dx| (dbar/m)')
     axes.set_title('Magnitude of Normalized DAS Response v Cross-Shore Pressure Gradient Magnitude')
 
 if orientation == 'alongshore':
-    axes.scatter(np.abs(dpdx_array[theta_mask]), das_norm[theta_mask], c=theta_incident[theta_mask], s=25,
-                 marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
-    sc = axes.scatter(np.abs(dpdy_array), das_norm, c=theta_incident, s=5, cmap='coolwarm', vmin=-60, vmax=60)
+    # axes.scatter(np.abs(dpdy_array[theta_mask]), das_norm[theta_mask], c=theta_incident[theta_mask], s=25,
+    #              marker='*', cmap='coolwarm', vmin=-60, vmax=60, label='Shore Normal Waves')
+    sc = axes.scatter(np.abs(dpdy_array), das_norm, c=np.abs(theta_incident), s=15, cmap='Reds')#, vmin=-60, vmax=60)
     axes.set_xlabel('|dP/dy| (dbar/m)')
     axes.set_title('Magnitude of Normalized DAS Response v Alongshore Pressure Gradient Magnitude')
 
@@ -2074,51 +2127,58 @@ plt.close('all')
 
 
 '''COMPARISON OF ALONGSHORE AND CROSS-SHORE CHANNELS'''
-as_channel = 750
-cs_channel = 180
-
-cs = np.load(f'./data/frf_awac/Channel_{cs_channel}_wavedir_vars.npz', allow_pickle=True)
-cs = cs['arr_0'].item()
-as_ = np.load(f'./data/frf_awac/Channel_{as_channel}_wavedir_vars.npz', allow_pickle=True)
-as_ = as_['arr_0'].item()
-
-#make sure times are equal between the channels
-assert np.array_equal(cs['timestamps'], as_['timestamps']), "timestamp mismatch between channels"
-
-theta_cs = cs['theta_incident']
-das_ratio = as_['das_amplitude'] / cs['das_amplitude']
-tan_theta = np.tan(np.deg2rad(theta_cs))
-
-valid = np.abs(theta_cs) < 80  # exclude near shore-parallel where tan blows up
-
-fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-sc = ax.scatter(tan_theta[valid], das_ratio[valid], s=8, alpha=0.5, c=cs['Hs'][valid])
-fig.colorbar(sc, ax=ax, label='Hs (m)')
-lims = [-3, 3]
-ax.plot(lims, lims, linestyle='--', color='black', label='1:1 (predicted)')
-ax.set_xlim(lims); ax.set_ylim(lims)
-ax.set_xlabel(r'$\tan(\theta)$')
-ax.set_ylabel('DAS Amplitude Ratio (AS/CS)')
-ax.legend()
-ax.set_facecolor('white')
-
-plt.tight_layout()
-plt.savefig(f'./figures/wave_information/Channel_cs{cs_channel}_as{as_channel}_DasAmpRatio.png')
-# plt.show()
-plt.close('all')
-
-fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-sc = axes[0].scatter(cs['timestamps'], das_ratio, c=theta_cs, cmap='coolwarm', vmin=-90, vmax=90, s=6)
-axes[1].set_facecolor('white')
-fig.colorbar(sc, ax=axes[0], label='Direction (deg)')
-axes[1].scatter(cs['timestamps'], theta_cs, c='gray', s=4)
-axes[1].axhline(0, linestyle='--', color='black')
-axes[1].set_facecolor('white')
-
-plt.tight_layout()
-plt.savefig(f'./figures/wave_information/Channel_cs{cs_channel}_as{as_channel}_DasAmpRatiovTime.png')
-# plt.show()
-plt.close()
+# as_channel = 700
+# cs_channel = 250
+#
+# cs = np.load(f'./data/frf_awac/Channel_{cs_channel}_wavedir_vars.npz', allow_pickle=True)
+# cs = cs['arr_0'].item()
+# as_ = np.load(f'./data/frf_awac/Channel_{as_channel}_wavedir_vars.npz', allow_pickle=True)
+# as_ = as_['arr_0'].item()
+#
+# #make sure times are equal between the channels
+# assert np.array_equal(cs['timestamps'], as_['timestamps']), "timestamp mismatch between channels"
+#
+# theta_cs = cs['theta_incident']
+# das_ratio = as_['das_amplitude'] / cs['das_amplitude']
+# tan_theta = np.tan(np.deg2rad(theta_cs))
+#
+# valid = np.abs(theta_cs) < 80  # exclude near shore-parallel where tan blows up
+#
+# mask_ratio = valid & np.isfinite(das_ratio) & np.isfinite(tan_theta)
+# r_ratio, p_ratio = stats.pearsonr(tan_theta[mask_ratio], das_ratio[mask_ratio])
+# slope_ratio, intercept_ratio, _, _, se_ratio = stats.linregress(tan_theta[mask_ratio], das_ratio[mask_ratio])
+#
+# fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+# sc = ax.scatter(tan_theta[valid], das_ratio[valid], s=8, alpha=0.5, c=cs['Hs'][valid])
+# fig.colorbar(sc, ax=ax, label='Hs (m)')
+# lims = [-3, 3]
+# ax.plot(lims, lims, linestyle='--', color='black', label='1:1 (predicted)')
+# x_fit_r = np.linspace(*lims, 100)
+# ax.plot(x_fit_r, slope_ratio * x_fit_r + intercept_ratio, color='green', linestyle=':',
+#         label=f'fit: slope={slope_ratio:.2f}, r={r_ratio:.2f}, p={p_ratio:.2e}')
+# ax.set_xlim(lims); ax.set_ylim(lims)
+# ax.set_xlabel(r'$\tan(\theta)$')
+# ax.set_ylabel('DAS Amplitude Ratio (AS/CS)')
+# ax.legend()
+# ax.set_facecolor('white')
+#
+# plt.tight_layout()
+# plt.savefig(f'./figures/wave_information/Channel_cs{cs_channel}_as{as_channel}_DasAmpRatio.png')
+# # plt.show()
+# plt.close('all')
+#
+# fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+# sc = axes[0].scatter(cs['timestamps'], das_ratio, c=theta_cs, cmap='coolwarm', vmin=-90, vmax=90, s=6)
+# axes[1].set_facecolor('white')
+# fig.colorbar(sc, ax=axes[0], label='Direction (deg)')
+# axes[1].scatter(cs['timestamps'], theta_cs, c='gray', s=4)
+# axes[1].axhline(0, linestyle='--', color='black')
+# axes[1].set_facecolor('white')
+#
+# plt.tight_layout()
+# plt.savefig(f'./figures/wave_information/Channel_cs{cs_channel}_as{as_channel}_DasAmpRatiovTime.png')
+# # plt.show()
+# plt.close()
 
 
 
@@ -2134,6 +2194,8 @@ plt.close()
 #TODO: 1. can spectrally derive the dpdx and dpdy.
 #TODO: 2. evaluate DAS amplitude at the spectral peak like I am doing for dpdx and dpdy currently. Or integrate over a narrow band near the spectral peak to suppress noise
 #TODO: started with one.
+
+#TODO: may need to redo some stuff with teh new DAS intervals at 35 mins?
 
 
 

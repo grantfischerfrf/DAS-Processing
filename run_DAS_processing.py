@@ -21,7 +21,7 @@ if __name__ == '__main__':
     os.makedirs(savefolder, exist_ok=True)
 
     all_files = sorted(glob.glob(os.path.join(datafolder, '*.h5')), key=sequence_number) #create a list of all files
-    indices = range(1, len(all_files) - 1)  #indices to loop through
+    indices = range(1, len(all_files) - 1)  #indices to loop through - skip first file to avoid edge effects
 
     worker = partial(process_worker, all_files=all_files, savefolder=savefolder) #define a worker function for the multiprocessing
 

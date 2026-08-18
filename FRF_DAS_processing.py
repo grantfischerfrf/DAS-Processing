@@ -15,9 +15,11 @@ def sequence_number(path):
     filename = os.path.basename(path) #pull filename
 
     #downsampled format
-    match = re.search(r'(\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2})', filename) #looks for a string of dates - regex
+    match = re.search(r'(\d{4}\D+\d{2}\D+\d{2}\D+\d{2}\D+\d{2}\D+\d{2})', filename) #looks for a string of dates - regex. '\D+' matches any character
     if match:
-        return datetime.strptime(match.group(1), "%Y-%m-%d_%H.%M.%S")
+        timestamp = re.sub(r'\D+', '', match.group())
+        return datetime.strptime(timestamp, "%Y%m%d%H%M%S")
+        # return datetime.strptime(match.group(1), "%Y-%m-%d_%H.%M.%S")
 
     #old raw format
     match = re.search(r'_(\d+)\.h5$', filename) #looks for a string of the form "_<number>.h5" at the end of the filename
