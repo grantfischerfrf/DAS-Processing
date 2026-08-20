@@ -9,17 +9,10 @@ import re
 import numpy as np
 import glob
 from tqdm import tqdm
-from FRF_DAS_processing import read_dasFile, sequence_number, time2dateTime, strain2phase
 from scipy.signal import welch, spectrogram
+from utils import clip_by_time, sequence_number, read_dasFile, time2dateTime, load_processedData, get_DAS_PSD_burst, get_orientation, strain2phase, get_burst_files
+from Empirical_Calibration import wavenumber
 
-
-def load_processedData(processed_data_path):
-
-    with h5py.File(processed_data_path, 'r') as f:  #open hdf5 file and read the strain and time datasets
-        strain = f['strain'][:]  # shape (time, N_channels)
-        time = f['time'][:]  # shape (time,)
-
-    return strain, time
 
 
 def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=None, envelope=False):
@@ -27,20 +20,23 @@ def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=
     #plot a timeseries given a list of strain file paths.
     fig, axes = plt.subplots(1, 1, figsize=(20, 8))
 
+    #clip filepaths by time stamps
+    file_paths = clip_by_time(file_paths, t_start, t_end)
+
     tqdm.write(f'Plotting {len(file_paths)} files...')
     for file in tqdm(file_paths, colour='#ff5733'): #loop through all file paths
 
-        match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})',
-                          file)
-        if match:
-            timestamp_str = match.group(1)
-            timestamp = datetime.strptime(timestamp_str, "%Y_%m_%d_%H_%M_%S")
-            timestamp_utc = timestamp.replace(tzinfo=timezone.utc)
-            if timestamp_utc < t_start or timestamp_utc > t_end:
-                continue
-        else:
-            print(f"No timestamp found in file name: {file}")  # break the loop and inspect file names instead
-            break
+        # match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})',
+        #                   file)
+        # if match:
+        #     timestamp_str = match.group(1)
+        #     timestamp = datetime.strptime(timestamp_str, "%Y_%m_%d_%H_%M_%S")
+        #     timestamp_utc = timestamp.replace(tzinfo=timezone.utc)
+        #     if timestamp_utc < t_start or timestamp_utc > t_end:
+        #         continue
+        # else:
+        #     print(f"No timestamp found in file name: {file}")  # break the loop and inspect file names instead
+        #     break
 
         strain, time = load_processedData(file)
 
@@ -69,7 +65,7 @@ def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=
     if t_start is not None and t_end is not None:
         axes.set_xlim(t_start, t_end)
     plt.tight_layout()
-    plt.savefig(f'{save_path}/{starttime.strftime("%Y_%m_%d_%H_%M_%S")}_timeseries_{channel}.png')
+    plt.savefig(f'{save_path}/{t_start.strftime("%Y_%m_%d_%H_%M_%S")}_timeseries_{channel}.png')
     plt.show()
     plt.close('all')
 
@@ -104,7 +100,7 @@ def waterFall(data, time, channel_spacing, channel_start:int, channel_end:int, s
     plt.close('all')
 
 
-def build_spectrogram_data(all_files, channel:int, sampling_frequency=500,
+def build_spectrogram_data(all_files, channel:int, start_time:datetime, end_time:datetime, sampling_frequency=500,
                              nperseg=512, noverlap=400):
     """
     Concatenate raw strain across files and compute a spectrogram.
@@ -112,6 +108,8 @@ def build_spectrogram_data(all_files, channel:int, sampling_frequency=500,
     """
     strain_list = []
     time_list = []  #FIXME: careful with the memory here
+
+    all_files = clip_by_time(all_files, start_time, end_time) #clip file paths by timestamps
 
     for file_path in tqdm(all_files):
         raw_data = read_dasFile(file_path)
@@ -280,27 +278,29 @@ def get_waveNumber(strain, channel_start=250, channel_end=300, dx = 1.6, samplin
     return k
 
 
-def PSD_One_Channel(file_paths, channel, nperseg, noverlap, sampling_frequency=2):
+def PSD_One_Channel(file_paths, channel:list, nperseg, noverlap, start_time:datetime, end_time:datetime, sampling_frequency=2):
 
-    #TODO: add time mask component here at some point. also make it so multiple channels can be plot on the same graph
+    file_paths = clip_by_time(file_paths, start_time, end_time)
 
     tqdm.write(f'Plotting {len(file_paths)} files...')
+
     for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
         strain, time = load_processedData(file)
 
         datetime_array = time2dateTime(time)
         save_time = datetime_array[0]
 
-        #obtain the power spectral density (and sample frequencies) of strain array
-        freqs, psd = welch(strain[:, channel], fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap)
+        for ch in channel:
+            #obtain the power spectral density (and sample frequencies) of strain array
+            freqs, psd = welch(strain[:, ch], fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap)
 
-        fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+            fig, axes = plt.subplots(1, 1, figsize=(12, 8))
 
-        axes.plot(freqs, psd, color='red', linewidth=1)
-        axes.set_xlabel('Frequency (Hz)')
-        axes.set_ylabel('PSD (strain**2/Hz)')
-        axes.set_title(f'Power Spectral Density at Channel {channel}')
-        axes.grid()
+            axes.plot(freqs, psd, color='red', linewidth=1)
+            axes.set_xlabel('Frequency (Hz)')
+            axes.set_ylabel('PSD (strain**2/Hz)')
+            axes.set_title(f'Power Spectral Density at Channel {channel}')
+            axes.grid()
 
         plt.tight_layout()
         plt.savefig(f'./figures/PSD_one_channel/{save_time.strftime("_%Y-%m-%d_%H-%M-%S")}_PSD_at_Channel_{channel}.png')
@@ -309,7 +309,7 @@ def PSD_One_Channel(file_paths, channel, nperseg, noverlap, sampling_frequency=2
 
 
 
-def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:int, channel_spacing=1.6, sampling_frequency=2):
+def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:int, start_time:datetime, end_time:datetime, channel_spacing=1.6, sampling_frequency=2):
 
     #for each file, generate a wavenumber and amplitude and plot a timeseries of values
     fig, axes = plt.subplots(2, 1, figsize=(20, 8))
@@ -319,6 +319,8 @@ def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:i
     times = [] #empty lists to accumulate data
     amps = []
     ks = []
+
+    file_paths = clip_by_time(file_paths, start_time, end_time)
 
     tqdm.write(f'Plotting {len(file_paths)} files...')
     for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
@@ -351,8 +353,9 @@ def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:i
     plt.show()
     plt.close('all')
 
-def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, channel_spacing=1.6, averaged=False,
-                        dB=False):
+
+def PSD_across_channels(file_paths, nperseg, noverlap, start_time:datetime, end_time:datetime, sampling_frequency=2, channel_spacing=1.6, averaged=False,
+                        dB=False, savepath='./figures/freq_dist_plots'):
 
     tqdm.write(f'Plotting {len(file_paths)} files...')
     psd_to_avg = []  # accumulate psd to average over
@@ -364,6 +367,8 @@ def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, cha
 
     # set up grid of cross shore channels
     channel_positions = channel_spacing * np.arange(N_channels)
+
+    file_paths = clip_by_time(file_paths, start_time, end_time)
 
     for file in tqdm(file_paths, colour='#ff5733'):  # loop through all file paths
 
@@ -399,7 +404,7 @@ def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, cha
             axes.set_title(f'PSD v Channel Distance {save_time.strftime("_%Y-%m-%d_%H:%M:%S")} UTC')
 
             plt.tight_layout()
-            plt.savefig(f'./figures/freq_dist_plots/freq_dist_{save_time.strftime("_%Y-%m-%d_%H-%M-%S")}.png')
+            plt.savefig(f'{savepath}/freq_dist_{save_time.strftime("_%Y-%m-%d_%H-%M-%S")}.png')
             # plt.show()
             plt.close('all')
 
@@ -423,23 +428,174 @@ def PSD_across_channels(file_paths, nperseg, noverlap, sampling_frequency=2, cha
         axes.set_title(f'PSD v Channel Distance Averaged')
 
         plt.tight_layout()
-        plt.savefig(f'./figures/freq_dist_plots/Averaged_freq_dist.png')
+        plt.savefig(f'{savepath}/Averaged_freq_dist.png')
         plt.show()
         plt.close('all')
 
-#TODO: save path and time filter here
+def plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time:datetime, channel:int, wave_band_min=0.05, wave_band_max=0.3):
+
+    orientation = get_orientation(channel) #get the orientation of the selected DAS channel
+
+    burst_files = get_burst_files(das_data_paths, target_time, 35) #obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
+
+    das_freqs, das_PSD = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2) #compute the power spectral density over the burst using welch's method
+    das_wave_band = (das_freqs >= wave_band_min) & (das_freqs <= wave_band_max) #define the wave frequency band for the das
+    das_PSD = das_PSD[das_wave_band, :] #clip the power spectral density over the wave band
+    das_freqs = das_freqs[das_wave_band] #clip the frequency bins by the wave band
+
+    # pull AWAC spectrum
+    awac_data_path = os.path.join(awac_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz') #define awac data path
+    awac_data = np.load(awac_data_path, allow_pickle=True) #read the data
+    awac_data = awac_data['arr_0'].item() #open the dictionary and get past the initial format
+
+    C = awac_data['calibration_coefficient'] #calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
+    awac_dirspec = awac_data['awac_corrected_directional_spectrum']#awac directional spectrum
+    awac_freqs = awac_data['awac_frequency_bins'] #awac frequency bins
+    awac_dirs = awac_data['awac_directional_bins'] #awac directional bins
+    h = awac_data['water_depth'] #water depth along the cable
+    calibration_flag = awac_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+    # define constants
+    rho = 1025 #kg/m^3 density of seawater
+    g = 9.81 #m/s^2 gravitational acceleration
+    h_local = h[channel] #water depth at chosen DAS channel
+
+    awac_T = 1 / awac_freqs  #convert awac frequency bins to period
+    awac_k = wavenumber(h_local, awac_T)  # awac wavenumber at each period / frequency bin
+    awac_Kp = 1 / np.cosh(awac_k * h_local)  # pressure response factor at each awac wavenumber
+
+    # integrate awac directional spectrum over directional bins
+    awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
+    awac_freqs = awac_freqs[awac_wave_band]  # constrain the awac frequencies over the wave band
+    awac_Kp = awac_Kp[awac_wave_band] #constrain the awac pressure response factor over the wave band
+
+    Seta_f_awac = np.trapezoid(awac_dirspec[channel, awac_wave_band, :], awac_dirs, axis=-1).T
+
+    # convert awac SSE spectrum to pressure spectrum.
+    Sp_f_awac = (Seta_f_awac * (rho * g * awac_Kp) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
+    # correct DAS spectrum to convert from phase_shifts to pressure
+    Sp_f_das = (das_PSD[:, channel] * C[channel]) / 1e8  # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
+
+    # integrate under the spectra - should yield essentially the same value if calibration was done correctly
+    Prms_das = np.sqrt(np.trapezoid(Sp_f_das, das_freqs))  #compute rms pressure value from the das pressure spectrum
+    Prms_awac = np.sqrt(np.trapezoid(Sp_f_awac, awac_freqs)) #compute rms pressure value from the awac pressure spectrum
+
+    #print out metrics
+    print(f'Channel: {channel}, {orientation}')
+    print(f'PRESSURE RMS VALUES: \n DAS: {Prms_das} \n AWAC: {Prms_awac}')
+    print("Calibration Flag: Pass" if calibration_flag[channel] else "Calibration Flag: Fail")
+
+    # plot the spectra on the same plot
+    fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+
+    axes.plot(awac_freqs, Sp_f_awac, color='blue', label='awac pressure')
+    axes.plot(das_freqs, Sp_f_das, color='red', label='DAS-derived')
+    axes.set_xlabel('Frequency (Hz)')
+    axes.set_ylabel('Pressure PSD (dbar²/Hz)')
+    axes.set_title(f'Spectral Area Matching; Channel: {channel}, Time: {target_time.strftime("%Y-%m-%d %H:%M:%S")}')
+    axes.legend()
+
+    plt.tight_layout()
+    plt.savefig(f'{save_path}/channel_{channel}_time_{target_time}_area.png')
+    plt.show()
+    plt.close('all')
+
+
+def CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path, wave_band_min=0.05, wave_band_max=0.3):
+
+    #calculate the rms pressure from the das and awac for all VALID channels for all bursts
+    n_hours = len(awac_data_paths) #one burst per hour, files are saved by the hour.
+    awac_data_dir = os.path.dirname(awac_data_paths[0]) #awac directory name
+
+    #initialize the figure for plotting
+    fig, axes = plt.subplots(1, 1, figsize=(12, 12))
+    axes.axline((0, 0), slope=1, color='black', linestyle='--') #diagonal line for one to one plot
+    axes.set_xlabel('DAS RMS Pressure (dbar)')
+    axes.set_ylabel('AWAC RMS Pressure (dbar)')
+
+    sum_squared_error = 0.0 #error placeholder to fill incrementally during the loops
+    n_valid = 0
+    for hour in tqdm(range(n_hours), colour='yellow'):
+        target_time = sequence_number(awac_data_paths[hour])
+        burst_files = get_burst_files(das_data_paths, target_time, 35)  # obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
+
+        das_freqs, das_PSD = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2)  # compute the power spectral density over the burst using welch's method
+        das_wave_band = (das_freqs >= wave_band_min) & (das_freqs <= wave_band_max)  # define the wave frequency band for the das
+        das_PSD = das_PSD[das_wave_band, :]  # clip the power spectral density over the wave band
+        das_freqs = das_freqs[das_wave_band]  # clip the frequency bins by the wave band
+
+        # pull AWAC spectrum
+        awac_data_path = os.path.join(awac_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
+        awac_data = np.load(awac_data_path, allow_pickle=True)  # read the data
+        awac_data = awac_data['arr_0'].item()  # open the dictionary and get past the initial format
+
+        C = awac_data['calibration_coefficient']  # calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
+        awac_dirspec = awac_data['awac_corrected_directional_spectrum']  # awac directional spectrum
+        awac_freqs = awac_data['awac_frequency_bins']  # awac frequency bins
+        awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
+        awac_dirs = awac_data['awac_directional_bins']  # awac directional bins
+        h = awac_data['water_depth']  # water depth along the cable
+        calibration_flag = awac_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+        # define constants
+        rho = 1025  # kg/m^3 density of seawater
+        g = 9.81  # m/s^2 gravitational acceleration
+        n_channels = C.shape[0]
+        for ch in range(n_channels):
+            if not calibration_flag[ch]:
+                continue
+
+            h_local = h[ch]  # water depth at chosen DAS channel
+
+            awac_T = 1 / awac_freqs  # convert awac frequency bins to period
+            awac_k = wavenumber(h_local, awac_T)  # awac wavenumber at each period / frequency bin
+            awac_Kp = 1 / np.cosh(awac_k * h_local)  # pressure response factor at each awac wavenumber
+
+            # integrate awac directional spectrum over directional bins
+            awac_freqs_band = awac_freqs[awac_wave_band]  # constrain the awac frequencies over the wave band
+            awac_Kp_band = awac_Kp[awac_wave_band]  # constrain the awac pressure response factor over the wave band
+
+            Seta_f_awac = np.trapezoid(awac_dirspec[ch, awac_wave_band, :], awac_dirs, axis=-1).T
+
+
+            # convert awac SSE spectrum to pressure spectrum.
+            Sp_f_awac = (Seta_f_awac * (rho * g * awac_Kp_band) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
+            # correct DAS spectrum to convert from phase_shifts to pressure
+            Sp_f_das = (das_PSD[:, ch] * C[ch]) / 1e8  # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
+
+            # integrate under the spectra - should yield essentially the same value if calibration was done correctly
+            Prms_das = np.sqrt(np.trapezoid(Sp_f_das, das_freqs))  # compute rms pressure value from the das pressure spectrum
+            Prms_awac = np.sqrt(np.trapezoid(Sp_f_awac, awac_freqs_band))  # compute rms pressure value from the awac pressure spectrum
+
+            axes.scatter(Prms_das, Prms_awac, color='blue', s=3, alpha=0.5)
+
+            error = Prms_das - Prms_awac
+            sum_squared_error += error ** 2
+            n_valid += 1
+
+    rmse = np.sqrt(sum_squared_error / n_valid)
+    print(f"RMSE = {rmse:.6f} dbar")
+
+    axes.set_title(f'DAS v AWAC Spectral Area Matching Calibration, RMSE:{rmse}')
+    plt.tight_layout()
+    plt.savefig('./figures/area_matching/RMSE_plot.png')
+    plt.show()
+    plt.close('all')
+
+
+
 
 if __name__ == "__main__":
 
     #processed data
-    processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    # processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     # strain, time = load_processedData(processed_data_paths) #pull processed strain and time data
 
     # datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
 
     # define starttime and endtime for plotting
-    starttime = datetime(2026, 6, 6, 0, 0, 0, tzinfo=timezone.utc)
-    endtime = datetime(2026, 6, 6, 23, 59, 59, tzinfo=timezone.utc)
+    # starttime = datetime(2026, 6, 6, 0, 0, 0, tzinfo=timezone.utc)
+    # endtime = datetime(2026, 6, 6, 23, 59, 59, tzinfo=timezone.utc)
 
     '''CREATE WATERFALL PLOT'''
     # # savepath = './figures/20260601'
@@ -449,6 +605,7 @@ if __name__ == "__main__":
     # # waterFall(strain, datetime_array, channel_spacing, starttime, endtime, channel_start, channel_end, savepath)
     #
     # filepaths = sorted(glob.glob('./data/for_OSU_processed/20260601/*.h5'), key=sequence_number)
+    # filepaths = clip_by_time(file_paths, starttime, endtime)
     # count = 0
     # for file in tqdm(filepaths):
     #     strain, time = load_processedData(file)
@@ -477,7 +634,7 @@ if __name__ == "__main__":
     # spectrogram_plot(Sxx, freqs, datetime_array_, savepath, channel=channel, dB=False)
 
     '''TIMESERIES PLOTS'''
-    plot_timeSeries(processed_data_paths, channel=700, save_path='./figures', t_start=starttime, t_end=endtime, envelope=False)
+    # plot_timeSeries(processed_data_paths, channel=700, save_path='./figures', t_start=starttime, t_end=endtime, envelope=False)
 
     '''WAVENUMBER AND AMPLITUDE TIMESERIES AT A PARTICULAR CHANNEL'''
     # k_and_amp_timeseries(processed_data_paths, save_path='./figures', channel_start=600, channel_end=620, channel_spacing=1.6)
@@ -491,12 +648,27 @@ if __name__ == "__main__":
     # channel = 310
     # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
+    '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST'''
+    # target_time = datetime(2026, 6, 1, 0, 0, 0) #target time to check spectra
+    # awac_data_dir = './data/frf_awac/calibration_coefficients_burst'
+    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    # save_path = './figures/area_matching'
+    # plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time, channel=250)
+
+    '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
+    awac_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst/*'), key=sequence_number)
+    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    save_path = './figures/area_matching'
+    CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path)
+
+
+
+
 
     #TODO: normalizing the strain by the distance from shore may help with fading in the middle. Not sure if you can do this, decay in strain signal may be related nonlinearly with distance
     #TODO: normalize by z score???
 
     #TODO: look at the Radar data.
 
-    #TODO: play with the sampling window for the power spectral density calculation - some data is fuzzy, maybe use log scale for IG signal?
+    #TODO: make a run frf DAS Plots script at the end of this
 
-    #TODO: need a clipping function for time

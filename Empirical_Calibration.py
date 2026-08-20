@@ -2,16 +2,15 @@ import numpy as np
 from datetime import datetime, timedelta
 import pandas as pd
 import xarray as xr
-from FRF_DAS_processing import strain2phase
 import re
-from FRF_DAS_plots import load_processedData
+from utils import load_processedData, get_DAS_PSD, get_DAS_PSD_burst, strain2phase
 from scipy.signal import welch
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 
 
-def wavenumber(h, T, g=9.81):
+def wavenumber_approx(h, T, g=9.81):
 
     #Solution for k using Simarro and Orfila (2013)
     # one step correction from Newton's method applied to Beji (2013) initial guess
@@ -32,6 +31,32 @@ def wavenumber(h, T, g=9.81):
     us = ((ub **2) + uo * (np.cosh(ub))**2) / (ub + np.sinh(ub) * np.cosh(ub)) #kh
 
     k = us / h
+
+    return k
+
+def wavenumber(h, T, tol=1e-6, max_iter=50):
+    """
+    Solve the linear dispersion relation exactly via Newton-Raphson.
+    h: water depth (scalar)
+    T: wave period(s), scalar or array
+    Returns k with same shape as T.
+    """
+    #newton-raphson formula is: xn+1 = xn - f(xn)/f'(xn)
+
+    g = 9.81
+    T = np.atleast_1d(T).astype(float)
+    omega = 2 * np.pi / T
+    k = omega**2 / g  # deep-water guess as starting point
+
+    for _ in range(max_iter):
+        kh = k * h  # dimensionless relative depth (wavenumber x depth)
+        tanh_kh = np.tanh(kh)  # tanh(kh)
+        f = g * k * tanh_kh - omega ** 2  # residual: f(k) = g*k*tanh(kh) - omega^2, should be zero at the true root
+        fp = g * tanh_kh + g * kh * (1 - tanh_kh ** 2)  # f'(k): derivative of f w.r.t. k (product rule + chain rule on tanh(kh))
+        dk = f / fp  # Newton-Raphson step size: dk = f(k) / f'(k)
+        k -= dk  # update k toward the root: k_new = k_old - dk
+        if np.max(np.abs(dk)) < tol:
+            break
 
     return k
 
@@ -66,7 +91,6 @@ def refractionCoefficient(theta0, theta1):
 
     return np.sqrt(np.cos(theta0) / np.cos(theta1))  #ratio of cosines of the deep water and shallow water wave angles
 
-
 def get_burst_start(file_path):
     match = re.search(r'(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})', file_path)
     if not match:
@@ -82,7 +106,6 @@ def parse_das_timestamp(file_path):
     if not match:
         return None
     return datetime.strptime(match.group(1), '%Y_%m_%d_%H_%M_%S')
-
 
 def get_AWAC_data(file_path):
 
@@ -106,37 +129,6 @@ def get_AWAC_data(file_path):
     T = 1 / freqs  # wave period at each frequency
 
     return S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation
-
-def get_DAS_PSD(file_path, nperseg, noverlap=None, sampling_frequency=2):
-
-    #read file
-    strain, time = load_processedData(file_path)
-
-    #convert strain to phase - original strain to phase equation is not suitable for this calibration
-    phase = strain2phase(strain)
-
-    if noverlap is None:
-        noverlap = nperseg // 2
-
-    freqs, PSD = welch(phase, fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap, axis=0) #compute PSD for each channel, returns PSD of shape (n_freqs, n_channels)
-
-    return freqs, PSD
-
-def get_DAS_PSD_burst(file_list, nperseg=256, sampling_frequency=2):
-    """
-    Concatenate raw DAS strain data across all files in a burst,
-    then compute a single Welch PSD over the full burst -- matches
-    how the AWAC's own 35-min burst PSD is computed.
-    """
-    raw_phase = []
-    for f in file_list:
-        strain, time = load_processedData(f)
-        phase = strain2phase(strain)
-        raw_phase.append(phase)
-
-    raw_concat = np.concatenate(raw_phase, axis=0)  # concatenate along the time axis
-    freqs, PSD = welch(raw_concat, fs=sampling_frequency, nperseg=nperseg, axis=0)
-    return freqs, PSD
 
 
 def compute_calibration_coefficient(files_to_process,
@@ -511,7 +503,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             # pull the DAS PSD at the current channel and time step
             das_PSD = das_PSD_all_channels[:, ch]
 
-            h1 = surfaceElevation - bed[ch]  # depth at each point - corrected for tides?
+            h1 = surfaceElevation - bed[ch]  # depth at each point
 
             # h1_list.append(h1)
 
@@ -522,20 +514,18 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             water_depth[
                 ch] = h1  # append the water_depth for each channel
 
+            k1_arr = wavenumber(h1, T)  # wavenumber for all frequencies and depths
+
             valid_channels += 1  # add a count for each channel that is allowed to pass through
 
             S1_local = np.zeros((len(awac_freqs), len(dirs)), dtype=np.float32)
-
-            k1_arr = np.zeros(len(awac_freqs))  # store k1 per frequency - no recomputation later
 
             for i, f in enumerate(awac_freqs):
 
                 k0_i = k0[i]  # wavenumber at the AWAC at time t (different depth over time) and frequency f
 
-                # compute the local wavenumber
-                k1 = wavenumber(h1, T[i])  # wavenumber at a given frequency and depth    #TODO: can solve for this with dispersion relation instead of approximation
-
-                k1_arr[i] = k1
+                # get the local wavenumber
+                k1 = k1_arr[i]
 
                 Ks = shoalingCoefficient(k0_i, h0, k1, h1)  # compute the shoaling coefficient
 
@@ -560,7 +550,6 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
                     theta1 = np.arcsin(sin_theta1)
 
-                    #TODO: if we are simulating a wave propagating along the cable orientation matters. On the alongshore portion I may need to rotate another 90 degrees
                     J = np.abs((k1 / k0_i) * (np.cos(theta1) / cos_theta0[j]))
                     # compute the Jacobian of the transformation from (f, theta0) to (f, theta1) - this is the change in the directional spectrum due to refraction
                     # absolute value is used because the energy flux is always positive, but the Jacobian can be negative for certain angles. The absolute value ensures that we are only considering the magnitude of the change in the directional spectrum.
@@ -573,6 +562,8 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
                     S1 = S0 * (Ks ** 2) * J  # apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
 
+                    # S1_integrated = np.trapezoid()
+
                     theta1_from_deg = np.rad2deg(
                         theta1) + 71.8535  # convert radians to degrees -> convert back to original direction bin reference (true north)
 
@@ -580,24 +571,21 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
                     theta1_from_deg %= 360
 
                     diff = np.abs((dirs - theta1_from_deg + 180) % 360 - 180)
-                    j_new = np.argmin(diff)
+                    j_new = np.argmin(diff)   #TODO: consider integrating S1 directly instead of redistributing bins
 
-                    S1_local[
-                        i, j_new] += S1  # shape(n_freq, n_dir) - store the local spectrum (at a particular channel) for this frequency and direction
+                    S1_local[i, j_new] += S1  # shape(n_freq, n_dir) - store the local spectrum (at a particular channel) for this frequency and direction
 
-            # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed - goda parameterization
+            # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed - goda parameterization - maybe try without this
             m0_per_freq = np.nansum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
-            m0 = np.nansum(
-                m0_per_freq * df)  # integrate over frequency to get the total variance of the sea surface elevation spectrum
+            m0 = np.nansum(m0_per_freq * df)  # integrate over frequency to get the total variance of the sea surface elevation spectrum
 
-            Hrms = np.sqrt(
-                8 * m0)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
+            Hrms = np.sqrt(8 * m0)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
 
             Hmax = gamma_break * h1  # compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
 
             if Hrms > Hmax:
-                scale = (
-                                    Hmax / Hrms) ** 2  # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+                # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+                scale = (Hmax / Hrms) ** 2
                 S1_local = S1_local * scale  # apply the scaling factor to the spectrum
 
             directional_spectrum[ch, :, :] = S1_local  # save the full directional spectrum
@@ -606,23 +594,23 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             for i, f in enumerate(awac_freqs):
                 k1 = k1_arr[i]  # get the local wavenumber for the current frequency
 
-                Kp = 1 / np.cosh(
-                    k1 * h1)  # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
+                Kp = 1 / np.cosh(k1 * h1)  # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
 
-                P1_f = S1_local[i, :] * (
-                        rho * g * Kp) ** 2  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
+                P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
 
-                pressure_spectrum[i] = np.nansum(
-                    P1_f) * dtheta  # integrate over the direction bins to get a 1D spectrum
+                pressure_spectrum[i] = np.nansum(P1_f) * dtheta  # integrate over the direction bins to get a 1D spectrum
 
             # compute the calibration coefficient at each channel
             # first integrate both the DAS PSD and AWAC PSD over the desired wave band
-            das_wave_band = (das_freqs >= 0.05) & (
-                    das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
-            das_psd_variance = np.trapezoid(das_PSD[das_wave_band],
-                                            das_freqs[das_wave_band])  # integrated power spectral density of the DAS
+            das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
+
+            das_psd_variance = np.trapezoid(
+                das_PSD[das_wave_band],
+                das_freqs[das_wave_band]
+            )  # integrated power spectral density of the DAS
+
             awac_psd_variance = np.trapezoid(
-                pressure_spectrum[awac_wave_band],
+                pressure_spectrum[awac_wave_band],   #TODO: if errors do not resolve look to use SSE here instead.
                 awac_freqs[awac_wave_band]
             )  # integrated power spectral density of the AWAC
 
@@ -657,6 +645,14 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             f'{save_folder}/Calib{b_start.strftime("_%Y-%m-%d_%H_%M_%S")}.npz',
             save_dict
         )
+
+        # # SANITY CHECK
+        # plt.plot(np.arange(len(m0_list)), m0_list)
+        # plt.xlabel('channel number')
+        # plt.ylabel('Hrms (m)')
+        # plt.title('Hrms derived from corrected Directional Spectra at each DAS channel')
+        # plt.show()
+        # plt.close('all')
 
 
 
@@ -693,10 +689,6 @@ def process_worker_burst(burst_chunk, save_folder, DAS_XYZ_path, AWAC1_path, AWA
     )
 
 
-
-
-#TODO: check the code for errors. compare the spectra derived wave heights to measured wave heights.
-#TODO: burst level calibration - because the AWAC only records pressure spectra for a 34 minute burst (26 minute off)
 #TODO: need to add the 600m AWAC in as well!
 
 

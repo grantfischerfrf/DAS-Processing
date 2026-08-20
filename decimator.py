@@ -5,7 +5,8 @@ import glob
 import matplotlib.pyplot as plt
 import h5py
 from tqdm import tqdm
-from FRF_DAS_processing import read_dasFile, sequence_number, time2dateTime, read_Json
+from utils import read_dasFile, sequence_number, time2dateTime
+
 
 
 def write_to_hdf5(signal, time, save_dir):
@@ -126,11 +127,7 @@ def sanity_plot(file_path, raw_file_path, channel=1000):
     plt.close('all')
 
 
-def print_all_attributes(name, obj):
-    if obj.attrs:
-        print(f"\nAttributes for [{name}]:")
-        for key, value in obj.attrs.items():
-            print(f"  {key}: {value}")
+
 
 
 if __name__ == "__main__":
@@ -144,27 +141,13 @@ if __name__ == "__main__":
         decimate_data(file, save_dir)
 
 
-
-
-
-    '''EXTRAS'''  #TODO: maybe new script at some point for these
+    '''EXTRAS'''
     #sanity plot
     # processed_file = os.getcwd() + '/data/processed_66/1400_UTC/decimated_2026-06-06_13.55.01_UTC.h5'
     # raw_file = os.getcwd() + '/data/raw_66/1400_UTC/decimator_2026-06-06_13.55.01_UTC_011456.h5'
     # sanity_plot(processed_file, raw_file, channel=400)
 
 
-    # #read_Json Files - DAS configuration and engineering chain
-    # optical_setup = './documentation/FRF_Fiber1Mode8_Fiber2Mode10_1.6mGL_opticalSetUp.json'
-    # engineering_chain = './documentation/ONYX-0564 Fiber 1__SimpleLinearAssetChainFiber1_V2_v50_engineeringChain.json'
-    # read_Json(optical_setup)
-
-    #read attributes
-    # with h5py.File(raw_file, 'r') as f:
-    #     # First, print root attributes
-    #     print_all_attributes(raw_file, f)
-    #     # Then, recursively visit all objects inside the file
-    #     f.visititems(print_all_attributes)
 
 
 
