@@ -11,7 +11,7 @@ import glob
 from tqdm import tqdm
 from scipy.signal import welch, spectrogram
 from utils import clip_by_time, sequence_number, read_dasFile, time2dateTime, load_processedData, get_DAS_PSD_burst, get_orientation, strain2phase, get_burst_files
-from Empirical_Calibration import wavenumber
+from Calibration import wavenumber
 
 
 
@@ -449,7 +449,7 @@ def plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time:dateti
     awac_data = awac_data['arr_0'].item() #open the dictionary and get past the initial format
 
     C = awac_data['calibration_coefficient'] #calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
-    awac_dirspec = awac_data['awac_corrected_directional_spectrum']#awac directional spectrum
+    awac_Sf = awac_data['awac_corrected_frequency_spectrum']#awac frequency spectrum
     awac_freqs = awac_data['awac_frequency_bins'] #awac frequency bins
     awac_dirs = awac_data['awac_directional_bins'] #awac directional bins
     h = awac_data['water_depth'] #water depth along the cable
@@ -469,7 +469,7 @@ def plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time:dateti
     awac_freqs = awac_freqs[awac_wave_band]  # constrain the awac frequencies over the wave band
     awac_Kp = awac_Kp[awac_wave_band] #constrain the awac pressure response factor over the wave band
 
-    Seta_f_awac = np.trapezoid(awac_dirspec[channel, awac_wave_band, :], awac_dirs, axis=-1).T
+    Seta_f_awac = awac_Sf[channel, awac_wave_band].T
 
     # convert awac SSE spectrum to pressure spectrum.
     Sp_f_awac = (Seta_f_awac * (rho * g * awac_Kp) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
@@ -503,7 +503,7 @@ def plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time:dateti
 
 def CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path, wave_band_min=0.05, wave_band_max=0.3):
 
-    #calculate the rms pressure from the das and awac for all VALID channels for all bursts
+    #calculate the rms pressure from the das and awac for all VALID channels for all bursts  #TODO: add an option to average the bursts across all time and plot against the
     n_hours = len(awac_data_paths) #one burst per hour, files are saved by the hour.
     awac_data_dir = os.path.dirname(awac_data_paths[0]) #awac directory name
 
@@ -530,7 +530,7 @@ def CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path, wave_band_m
         awac_data = awac_data['arr_0'].item()  # open the dictionary and get past the initial format
 
         C = awac_data['calibration_coefficient']  # calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
-        awac_dirspec = awac_data['awac_corrected_directional_spectrum']  # awac directional spectrum
+        awac_Sf = awac_data['awac_corrected_frequency_spectrum']  # awac directional spectrum
         awac_freqs = awac_data['awac_frequency_bins']  # awac frequency bins
         awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
         awac_dirs = awac_data['awac_directional_bins']  # awac directional bins
@@ -555,8 +555,7 @@ def CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path, wave_band_m
             awac_freqs_band = awac_freqs[awac_wave_band]  # constrain the awac frequencies over the wave band
             awac_Kp_band = awac_Kp[awac_wave_band]  # constrain the awac pressure response factor over the wave band
 
-            Seta_f_awac = np.trapezoid(awac_dirspec[ch, awac_wave_band, :], awac_dirs, axis=-1).T
-
+            Seta_f_awac = awac_Sf[ch, awac_wave_band].T
 
             # convert awac SSE spectrum to pressure spectrum.
             Sp_f_awac = (Seta_f_awac * (rho * g * awac_Kp_band) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
@@ -567,7 +566,7 @@ def CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path, wave_band_m
             Prms_das = np.sqrt(np.trapezoid(Sp_f_das, das_freqs))  # compute rms pressure value from the das pressure spectrum
             Prms_awac = np.sqrt(np.trapezoid(Sp_f_awac, awac_freqs_band))  # compute rms pressure value from the awac pressure spectrum
 
-            axes.scatter(Prms_das, Prms_awac, color='blue', s=3, alpha=0.5)
+            axes.scatter(Prms_das, Prms_awac, color='blue', s=10, marker='P', alpha=0.5)
 
             error = Prms_das - Prms_awac
             sum_squared_error += error ** 2
@@ -576,7 +575,7 @@ def CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path, wave_band_m
     rmse = np.sqrt(sum_squared_error / n_valid)
     print(f"RMSE = {rmse:.6f} dbar")
 
-    axes.set_title(f'DAS v AWAC Spectral Area Matching Calibration, RMSE:{rmse}')
+    axes.set_title(f'DAS v AWAC Spectral Area Matching Calibration, RMSE:{rmse:.6f} (dbar)')
     plt.tight_layout()
     plt.savefig('./figures/area_matching/RMSE_plot.png')
     plt.show()
@@ -649,17 +648,17 @@ if __name__ == "__main__":
     # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
     '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST'''
-    # target_time = datetime(2026, 6, 1, 0, 0, 0) #target time to check spectra
-    # awac_data_dir = './data/frf_awac/calibration_coefficients_burst'
-    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    # save_path = './figures/area_matching'
-    # plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time, channel=250)
-
-    '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
-    awac_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst/*'), key=sequence_number)
+    target_time = datetime(2026, 6, 11, 0, 0, 0) #target time to check spectra
+    awac_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
     das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     save_path = './figures/area_matching'
-    CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path)
+    plot_CalibCoeff(das_data_paths, awac_data_dir, save_path, target_time, channel=800)
+
+    '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
+    # awac_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
+    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    # save_path = './figures/area_matching'
+    # CalibCoeff_allBursts(das_data_paths, awac_data_paths, save_path)
 
 
 

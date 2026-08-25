@@ -430,9 +430,10 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
     rho = 1025
     g = 9.81
+    awac_channel = 402 #xfrf 300m awac channel location 208 - approximate location. 600m awac is located at channel 402
 
     # get the depth across all channels
-    bed = channel_grid['z'].values  # depth at all channels
+    bed = channel_grid['z'].values  # depth at all channels along the grid
     N_channels = len(bed)  # number of channels in the DAS
 
     awac_wave_band = (awac_freqs >= 0.05) & (awac_freqs <= 0.3)  # wave band to integrate over
@@ -440,12 +441,6 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
     # precompute trig functions for wave refraction
     theta0_deg = dirs - 71.8535  # convert measure wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore
     theta0_deg = (theta0_deg + 180) % 360 - 180  # wrap to -180, 180. #waves propagating in opposite direction of positive x axis
-
-    valid_theta = (
-        # skip waves that are too oblique to xFRF. Causes the jacobian to converge to a singularity - very large values directional bins that shouldn't have a lot of energy
-            (np.abs(theta0_deg) < 75) &
-            (np.cos(np.deg2rad(theta0_deg)) > 0)  # skip non-shoreward propagating waves/bins
-    )
 
     theta0_rad = np.deg2rad(theta0_deg)  # convert to radians
     cos_theta0 = np.cos(theta0_rad)  # precomputation of cos(theta0)
@@ -460,9 +455,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
         das_start_time = np.datetime64(b_start)
 
         # burst-level PSD: concatenate raw data across all files in this burst, Welch once
-        das_freqs, das_PSD_all_channels = get_DAS_PSD_burst(
-            burst_files, nperseg=256, sampling_frequency=2
-        )
+        das_freqs, das_PSD_all_channels = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2)
 
         idx = np.argmin(np.abs(p_time - das_start_time))
         awac_start_time = p_time[idx]
@@ -472,38 +465,47 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             tqdm.write(f"Warning: AWAC burst mismatch for DAS burst {b_start}: "
                        f"matched AWAC at {awac_start_time} (offset {time_mismatch})")
 
-        S_f_theta_eta_selected = S_f_theta_eta[idx]
+        S_f_theta_eta_selected = S_f_theta_eta[idx] #direction spectrum from the awac at a particular time index - need to filter the valid directions here if using a direction mask
 
-        gaugeDepth0 = gaugeDepth.values[idx]
-        bottomElevation0 = bottomElevation.values[idx]
-        gaugeElevation0 = gaugeElevation.values.item()
+        gaugeDepth0 = gaugeDepth.values[idx] # depth from the water surface to the top of the gauge - positive value
+        bottomElevation0 = bottomElevation.values[idx]# gauge vertical position in NAVD88 - negative value
+        gaugeElevation0 = gaugeElevation.values.item() # bottom vertical location from altimiter - negative value
 
-        depth_from_bottom = gaugeElevation0 - bottomElevation0
-        h0 = gaugeDepth0 + depth_from_bottom
+        depth_from_bottom = gaugeElevation0 - bottomElevation0 #gives a positive depth up from the bottom
+        h0 = gaugeDepth0 + depth_from_bottom #gives the total positive depth at the location of the awac at a particular time ([idx] gives the time index)
 
-        surfaceElevation = gaugeElevation0 + gaugeDepth0
+        surfaceElevation = gaugeElevation0 + gaugeDepth0 #gives the surface elevation above or below NAVD88 reference
 
         k0 = wavenumber(h0, T)
 
         calibration_flag = np.ones(N_channels, dtype=int)
         C = np.full(N_channels, np.nan, dtype=np.float32)
         water_depth = np.full(N_channels, np.nan)
-        directional_spectrum = np.full((N_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32)
+        S1_directional_spectrum = np.full((N_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32)
+        S1_integrated_spectrum = np.full((N_channels, len(awac_freqs)), np.nan, dtype=np.float32)
 
         valid_channels = 0
 
         for ch in range(N_channels):
 
-            # skip the first ~100 channels of the DAS cable, there is no signal there
-            # if ch < 120 or ch > N_channels - 120:
-            #     continue
-
-            pressure_spectrum = np.zeros(len(awac_freqs))  # empty array to hold pressure spectrum
+            # pressure_spectrum = np.zeros(len(awac_freqs), dtype=np.float32)  # empty array to hold pressure spectrum - if desired
 
             # pull the DAS PSD at the current channel and time step
             das_PSD = das_PSD_all_channels[:, ch]
 
-            h1 = surfaceElevation - bed[ch]  # depth at each point
+            if ch == awac_channel:  #if the channel is the awac channel location
+                S1_local = S_f_theta_eta_selected.copy() #take the direction spectrum measured by the awac
+
+                water_depth[ch] = h0 #set the water depth equal to water depth at the awac location
+                valid_channels += 1  #channle is valid
+
+                S1_directional_spectrum[ch, :, :] = S1_local  #append to directional spectrum array for later saving
+                S1_integrated_spectrum[ch, :] = (np.nansum(S1_local, axis=1) * dtheta)
+
+                calibration_flag[ch] = 0 #set calibration flag to 0 because this is not a shoaled spectrum
+                continue
+
+            h1 = surfaceElevation - bed[ch]  # depth at each point along the grid. bed is a negative number. subtracting a negative number gives a positive water depth
 
             # h1_list.append(h1)
 
@@ -511,14 +513,17 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
                 calibration_flag[ch] = 0
                 continue
 
-            water_depth[
-                ch] = h1  # append the water_depth for each channel
+            water_depth[ch] = h1  # append the water_depth for each channel
 
             k1_arr = wavenumber(h1, T)  # wavenumber for all frequencies and depths
 
             valid_channels += 1  # add a count for each channel that is allowed to pass through
 
             S1_local = np.zeros((len(awac_freqs), len(dirs)), dtype=np.float32)
+            S1_integrated = np.zeros((len(awac_freqs)),  dtype=np.float32)
+
+            S0_integrated_plot = np.zeros(len(awac_freqs)) #DEBUG ONLY
+            S1_integrated_plot = np.zeros(len(awac_freqs)) #DEBUG ONLY
 
             for i, f in enumerate(awac_freqs):
 
@@ -531,52 +536,88 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
                 for j in range(len(dirs)):
 
-                    if not valid_theta[j]:
-                        # calibration_flag[ch] = 0
-                        continue
-
-                    theta0 = theta0_rad[j]
-
-                    # apply Snell's law to get the local wave angle at the DAS channel
+                    # Snell's law
                     sin_theta1 = (k0_i / k1) * sin_theta0[j]
 
-                    # AWAC directional spectrum
-                    S0 = S_f_theta_eta_selected[i, j]
-
-                    # sin_theta1 = (k0_i / k1) * np.sin(theta0)
-                    if np.abs(sin_theta1) > 1:  # no physical solution
-                        # calibration_flag[ch] = 0
+                    # skip directions that cannot refract to this depth
+                    # skip waves that are too oblique to xFRF. Causes the jacobian to converge to a singularity - very large values directional bins that shouldn't have a lot of energy
+                    if np.abs(sin_theta1) > 1 or np.abs(theta0_deg[j]) >= 80:
+                        # No valid offshore refraction solution (nonreal solutions due to oblique waves).
+                        # Fall back to shoaling only -> keep the AWAC's original angle, don't rotate it
+                        S0 = S_f_theta_eta_selected[i, j]
+                        S1 = S0 * (Ks ** 2)
+                        # S1_local[i, j] += S1  #OPTIONAL
+                        S1_integrated[i] += S1 * dtheta
                         continue
 
                     theta1 = np.arcsin(sin_theta1)
 
+                    # Jacobian
                     J = np.abs((k1 / k0_i) * (np.cos(theta1) / cos_theta0[j]))
-                    # compute the Jacobian of the transformation from (f, theta0) to (f, theta1) - this is the change in the directional spectrum due to refraction
-                    # absolute value is used because the energy flux is always positive, but the Jacobian can be negative for certain angles. The absolute value ensures that we are only considering the magnitude of the change in the directional spectrum.
-                    # this will blow up if theta0 is close to 90 degrees - currently skipping those angles
 
-                    # if J > 20:
-                    #     print(np.rad2deg(theta0), J, S0)
-                    #     J_list.append(J)
-                    #     S0_list.append(S0)
+                    # original directional spectrum
+                    S0 = S_f_theta_eta_selected[i, j]
 
-                    S1 = S0 * (Ks ** 2) * J  # apply conservation of energy flux to the spectrum - square the coefficients to keep units consistent - energy scales with amplitude squared.
+                    #direct integration: no J needed
+                    # J and the local bin width dtheta1 = dtheta/J
+                    # cancel exactly when integrating a flat AWAC dtheta grid.
+                    # transformed directional spectrum
+                    S1 = S0 * (Ks ** 2) * J
 
-                    # S1_integrated = np.trapezoid()
+                    # directly integrate over direction
+                    S1_integrated[i] += S1 * (dtheta / J)  #the dtheta / J is redundant here but is included for mathematical clarity
 
-                    theta1_from_deg = np.rad2deg(
-                        theta1) + 71.8535  # convert radians to degrees -> convert back to original direction bin reference (true north)
+                    # # DEBUG ONLY: AWAC spectrum retained before propagation
+                    # S0_integrated_plot[i] += S0
+                    # # propagated spectrum - DEBUG ONLY
+                    # S1_integrated_plot[i] += S1 * (dtheta / J)  #same here
 
-                    # wrap back to 0-360 original direction convention
-                    theta1_from_deg %= 360
+                    #OPTIONAL: full directional spectrum, redistributed onto dirs grid
+                    # Here J is required, because we're depositing a density into a
+                    # specific fixed-width bin rather than summing a scalar total.
+                    # theta1 = np.arcsin(sin_theta1)
+                    #
+                    # S1_density = S0 * (Ks ** 2) * J  # density in theta1-space
+                    #
+                    # theta1_from_deg = (np.rad2deg(theta1) + 71.8535) % 360 #convert radians to degrees -> convert back to original direction bin reference (true north), #wrap back to 0-360 original direction convention
+                    #
+                    # diff = np.abs((dirs - theta1_from_deg + 180) % 360 - 180)  #find the nearest direction bin
+                    # j_new = np.argmin(diff)
+                    #
+                    # # deposit density * TRUE local bin width (dtheta/J), not the fixed dtheta,
+                    # # so the redistributed spectrum still integrates to the same conserved
+                    # # total as the scalar path above.
+                    # S1_local[i, j_new] += S1_density * (dtheta / J)
 
-                    diff = np.abs((dirs - theta1_from_deg + 180) % 360 - 180)
-                    j_new = np.argmin(diff)   #TODO: consider integrating S1 directly instead of redistributing bins
+            # convert directional sum to directional integral
+            # S0_integrated_plot *= dtheta #debug only - this does not need to happen for
 
-                    S1_local[i, j_new] += S1  # shape(n_freq, n_dir) - store the local spectrum (at a particular channel) for this frequency and direction
 
-            # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed - goda parameterization - maybe try without this
-            m0_per_freq = np.nansum(S1_local, axis=1) * dtheta  # integrate over direction first -> shape (n_freq,)
+            #SANITY CHECK: to make sure energy flux is conserved between S0 and S1
+            # if ch==180:
+            #     Cg0 = groupSpeed(h0, k0)
+            #     Cg1 = groupSpeed(h1, k1_arr)
+            #     F0 = rho * g * Cg0 * S0_integrated_plot
+            #     F1 = rho * g * Cg1 * S1_integrated_plot
+            #     ratio = F1 / F0
+            #     plt.figure(figsize=(10, 6))
+            #     plt.plot(awac_freqs, ratio, color='green', linewidth=5)
+            #     plt.axhline(1, linestyle='--', color='black')
+            #     plt.ylim(0, 2)
+            #     plt.xlabel('Frequency (Hz)')
+            #     plt.ylabel(r'$F_1(f)/F_0(f)$')
+            #     plt.title('Energy Flux Conservation Check')
+            #     plt.grid()
+            #     plt.show()
+            #
+            #     # OPTIONAL cross-check: does the redistributed directional spectrum
+            #     # integrate (over dirs, at fixed dtheta) to the same total as the scalar path
+            #     S1_local_integrated_check = np.nansum(S1_local, axis=1) * dtheta
+            #     print("max abs diff, scalar vs redistributed:",
+            #           np.nanmax(np.abs(S1_local_integrated_check - S1_integrated)))
+
+            # apply depth induced dissipation using the breaker index. #TODO: more sophisticated methods can be used later is needed - goda parameterization
+            m0_per_freq = S1_integrated
             m0 = np.nansum(m0_per_freq * df)  # integrate over frequency to get the total variance of the sea surface elevation spectrum
 
             Hrms = np.sqrt(8 * m0)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
@@ -586,19 +627,25 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             if Hrms > Hmax:
                 # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
                 scale = (Hmax / Hrms) ** 2
-                S1_local = S1_local * scale  # apply the scaling factor to the spectrum
+                S1_integrated *= scale #apply scaling factor to the spectrum
+                S1_local *= scale  # OPTIONAL: apply the scaling factor to the spectrum
 
-            directional_spectrum[ch, :, :] = S1_local  # save the full directional spectrum
+            S1_directional_spectrum[ch, :, :] = S1_local  # OPTIONAL: save the full directional spectrum
+            S1_integrated_spectrum[ch, :] = S1_integrated #save the integrated frequency spectrum
 
             # convert surface elevation spectrum to pressure spectrum using linear wave theory
-            for i, f in enumerate(awac_freqs):
-                k1 = k1_arr[i]  # get the local wavenumber for the current frequency
+            Kp = 1 / np.cosh(k1_arr * h1) # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
 
-                Kp = 1 / np.cosh(k1 * h1)  # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
+            pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2 # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
 
-                P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
-
-                pressure_spectrum[i] = np.nansum(P1_f) * dtheta  # integrate over the direction bins to get a 1D spectrum
+            # for i, f in enumerate(awac_freqs):
+            #     k1 = k1_arr[i]  # get the local wavenumber for the current frequency
+            #
+            #     Kp = 1 / np.cosh(k1 * h1)  # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
+            #
+            #     # P1_f = S1_local[i, :] * (rho * g * Kp) ** 2  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
+            #     # pressure_spectrum[i] = np.nansum(P1_f) * dtheta  # integrate over the direction bins to get a 1D spectrum
+            #     pressure_spectrum = S1_integrated * (rho * g * Kp)**2
 
             # compute the calibration coefficient at each channel
             # first integrate both the DAS PSD and AWAC PSD over the desired wave band
@@ -610,7 +657,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             )  # integrated power spectral density of the DAS
 
             awac_psd_variance = np.trapezoid(
-                pressure_spectrum[awac_wave_band],   #TODO: if errors do not resolve look to use SSE here instead.
+                pressure_spectrum[awac_wave_band],
                 awac_freqs[awac_wave_band]
             )  # integrated power spectral density of the AWAC
 
@@ -630,10 +677,10 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             #     8 * m0_local)  # compute the root-mean-square wave height from the variance of the sea surface elevation spectrum
             # m0_list.append(Hrms_local)
 
-
         save_dict = {
             "calibration_coefficient": C,
-            "awac_corrected_directional_spectrum": directional_spectrum,
+            #"awac_corrected_directional_spectrum": S1_directional_spectrum,  #OPTIONAL
+            "awac_corrected_frequency_spectrum": S1_integrated_spectrum,
             'awac_frequency_bins': awac_freqs,
             'awac_directional_bins': dirs,
             "channel_number": Channel_Numbers,

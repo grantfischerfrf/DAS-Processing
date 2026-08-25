@@ -3,7 +3,7 @@ import glob
 from FRF_DAS_processing import sequence_number
 import os
 from functools import partial
-from Empirical_Calibration import process_worker, process_worker_burst, parse_das_timestamp
+from Calibration import process_worker, process_worker_burst, parse_das_timestamp
 from multiprocessing import Pool
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -43,9 +43,9 @@ if __name__ == "__main__":
     '''BURST'''
     all_files = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
 
-    save_folder = './data/frf_awac/calibration_coefficients_burst'
+    save_folder = './data/frf_awac/calibration_coefficients_burst_600'
     DAS_XYZ_path = './data/frf_awac/channel_grid.pkl'
-    AWAC1_path = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+    AWAC1_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
 
     os.makedirs(save_folder, exist_ok=True)
 

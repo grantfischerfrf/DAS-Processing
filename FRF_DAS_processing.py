@@ -8,7 +8,7 @@ import h5py
 import glob
 from tqdm import tqdm
 
-from utils import sequence_number, time2dateTime, read_dasFile
+from utils import sequence_number, time2dateTime, read_dasFile, phase2strain
 
 
 
