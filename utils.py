@@ -179,6 +179,30 @@ def get_DAS_PSD_burst(file_list, nperseg=256, sampling_frequency=2):
     return freqs, PSD
 
 
+def get_AWAC_data(file_path):
+
+    # 300m cross-shore location
+    data_300 = xr.open_dataset(file_path)
+    # print(list(data_300.keys())) #list all data variables, each variable should have a time array attached to it
+
+    dirspec = data_300['directionalWaveEnergyDensity']  # sea surface wave directional energy spectrum
+    # PorAST = data_300['PorAST'].values #PUV or SUV mode
+    gaugeDepth = data_300['gaugeDepth']  # depth from the water surface to the top of the gauge
+    gaugeElevation = data_300['gaugeElevation']  # gauge vertical position in NAVD88
+    bottomElevation = data_300['bottomEelevation']  # bottom vertical location from altimiter
+
+    # correct for DAS data using spectral matching
+    S_f_theta_eta = dirspec.values  # PSD S_eta(N_samples, f, theta)
+    freqs = dirspec.coords['waveFrequency'].values  # frequency bins - 0.04 - 0.4975 Hz
+    dirs = dirspec.coords['waveDirectionBins'].values  # direction bins - 0 - 355
+    time = dirspec.coords['time'].values  # 719 time steps over the entire month collect - one 34 minute burst per hour - split DAS into 35 minute sections
+    dtheta = np.diff(dirs)[0]  # bin width in degrees - 5
+    df = np.gradient(freqs)  # frequency bin widths
+    T = 1 / freqs  # wave period at each frequency
+
+    return S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation
+
+
 def get_burst_files(all_paths, start_time, burst_duration_min=35):
     """Pull all files whose timestamp falls within [start_time, start_time + burst_duration) """
     burst_end = start_time + timedelta(minutes=burst_duration_min)

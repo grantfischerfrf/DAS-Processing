@@ -1472,10 +1472,9 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 '''CHECK OF CALIBRATION COEFFICIENT - S_eta(x, f)'''
 #use the calibration to check the spectral area matching at different channels in the cross-shore
 #TODO: remember that the lack of good bathymetry will be present in this as well. The DAS spectrum will vary from the shoaled awac spectrum
-#TODO: during the calibration do I need to isolate on the component of the spectra projected in the direction of the das cable?
 
-#CROSS-SHORE CHANNEL CLOSE TO THE AWAC
-# channel = 208
+# CROSS-SHORE CHANNEL CLOSE TO THE AWAC
+# channel = 750
 # if channel >= 500 and channel <= 1092:
 #     orientation = 'alongshore'
 # else:
@@ -1502,6 +1501,7 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #
 # C = awac_data['calibration_coefficient']
 # awac_Sf = awac_data['awac_corrected_frequency_spectrum']
+# awac_Sf_t = awac_data['awac_corrected_directional_spectrum']
 # awac_freqs = awac_data['awac_frequency_bins']
 # awac_dirs = awac_data['awac_directional_bins']
 # h = awac_data['water_depth']
@@ -1538,7 +1538,9 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # #     projected_k = (awac_k[None, :, None])**2 * directional_weight[None, None, :]
 #
 # # Seta_f_awac = np.trapezoid(awac_dirspec[:, awac_wave_band, :] * directional_weight[None, None, :], awac_dirs, axis=-1).T
-# Seta_f_awac = awac_Sf[channel, awac_wave_band].T
+# dtheta = np.abs(awac_dirs[1] - awac_dirs[0])
+# Seta_f_awac = np.nansum(awac_Sf_t[channel, awac_wave_band, :], axis=-1) * dtheta #using the full directional spectrmum
+# # Seta_f_awac = awac_Sf[channel, awac_wave_band].T  #using the directly integrated frequency spectrum
 #
 # #convert awac SSE spectrum to pressure spectrum.
 # Sp_f_awac = (Seta_f_awac * (rho * g * awac_Kp)**2) / 1e8 #convert pascals to decibars, (must square for units to match)
@@ -1573,11 +1575,9 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # axes.legend()
 #
 # plt.tight_layout()
-# plt.savefig(f'./figures/area_matching/channel_{channel}_time_{start_time}_area.png')
+# # plt.savefig(f'./figures/area_matching/channel_{channel}_time_{start_time}_area.png')
 # plt.show()
 # plt.close('all')
-
-
 
 
 
@@ -1762,24 +1762,25 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #
 # #get burst groups for DAS
 # # group into top of the hour 35 minute bursts of files
-# BURST_DURATION_MIN = 35
-# MIN_FILES_PER_BURST = 6  # accept bursts with 6 or 7 files (allows for edge-of-dataset partial hours)
+# BURST_DURATION_MIN = 35 #how long each burst is
+# MIN_FILES_PER_BURST = 6  # accept bursts greater than 6 files (allows for edge-of-dataset partial hours)
 # BURST_TOLERANCE_SEC = 0 #tolerance in seconds
 #
-# bursts = defaultdict(list)  #TODO: Must explain everything this does.
-# for f in das_file_paths:
-#     ts = parse_das_timestamp(f)
-#     if ts is None:
+# bursts = defaultdict(list)  #creates a special dictionary the automatically creates an empty list whenever you access a new key. [] - [files]
+# for f in das_file_paths: #loop through every file
+#     ts = parse_das_timestamp(f)  #extract timestamps from the file name
+#     if ts is None:  #if the timestamp returns nothing skip the file
 #         continue
-#     burst_start = ts.replace(minute=0, second=0, microsecond=0)
-#     burst_end = burst_start + timedelta(minutes=BURST_DURATION_MIN, seconds=BURST_TOLERANCE_SEC)
-#     if burst_start <= ts < burst_end:
-#         bursts[burst_start].append(f)
+#     burst_start = ts.replace(minute=0, second=0, microsecond=0) #round the timestamp (datetime) down to the beginning of the hour. setting min sec usec to zero
+#     burst_end = burst_start + timedelta(minutes=BURST_DURATION_MIN, seconds=BURST_TOLERANCE_SEC) #add the burst duration in minutes and seconds to define the end of the burst
+#     if burst_start <= ts < burst_end: #if the timestamp of the file falls within the start and the end
+#         bursts[burst_start].append(f) #append the start of the burst to the defaultdict key - [timestamp] - [file_path1, 2, 3, ...]
+#         #basically creating hourly groups of files
 #
 # # keep only complete bursts, and sort by time
 # complete_bursts = {
-#     b: sorted(files, key=sequence_number)
-#     for b, files in bursts.items()
+#     b: sorted(files, key=sequence_number)   #sort the files by the timestamp keys
+#     for b, files in bursts.items()  #for the key and values in the bursts default dict. If the length of the number of files is >= 6 keep the key value pair.
 #     if len(files)  >= MIN_FILES_PER_BURST
 # }
 # burst_items = sorted(complete_bursts.items())  # list of (burst_start, [files]) tuples
@@ -1787,6 +1788,7 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # dpdx_array = np.zeros(len(calibration_file_paths)) #empty arrays to fill with data
 # dpdy_array = np.zeros(len(calibration_file_paths))
 # das_amplitude_array = np.zeros(len(calibration_file_paths))
+# p_array = np.zeros(len(calibration_file_paths))
 # timestamps = []
 # eps_x_array = np.zeros(len(calibration_file_paths))
 # eps_y_array = np.zeros(len(calibration_file_paths))
@@ -1815,8 +1817,8 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #     data_struc = np.load(data_path, allow_pickle=True)
 #     data = data_struc['arr_0'].item()
 #
-#     dirspec = data['awac_corrected_directional_spectrum'][channel, :, :]
-#     dirspec_clean = np.nan_to_num(dirspec, nan=0.0) #of shape (N_channels, N_freqs, N_dirs)
+#     S_f_awac = data['awac_corrected_frequency_spectrum'][channel, :]
+#     S_f_awac_clean = np.nan_to_num(S_f_awac, nan=0.0) #of shape (N_channels, N_freqs, N_dirs)
 #     freqs = data['awac_frequency_bins']
 #     dirs = data['awac_directional_bins']
 #     h = data['water_depth'][channel] #water depth should be corrected for tides.
@@ -1833,14 +1835,14 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #     #pull out the representative wave
 #     #significant wave height - Hmo
 #     awac_wave_band = (freqs >= 0.05) & (freqs <= 0.3)
-#     m0 = np.trapezoid(np.trapezoid(dirspec_clean[awac_wave_band, :], dirs, axis=-1), freqs[awac_wave_band], axis=-1)
+#     m0 = np.trapezoid(S_f_awac_clean[awac_wave_band], freqs[awac_wave_band], axis=-1)
 #     Hs = 4.004 * np.sqrt(m0)  #broadband Hs
 #     bulk_Hs[i] = Hs
 #
 #     #frequency spectrum
-#     S_f = np.trapezoid(dirspec_clean[awac_wave_band, :], dirs, axis=-1)
+#     S_f = S_f_awac_clean
 #     #direction spectrum
-#     S_theta = np.trapezoid(dirspec_clean[awac_wave_band, :], freqs[awac_wave_band], axis=0)
+#     S_theta = np.trapezoid(dirspec_clean[awac_wave_band, :], freqs[awac_wave_band], axis=0)  #FIXME: do I need the full directional spectrum
 #
 #     #peak frequency
 #     # fp_idx = np.argmax(S_f) #indices of the peak frequency bin
@@ -1896,15 +1898,18 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #
 #     S_f_band = dirspec_clean[awac_wave_band, :] #define sse spectrum over wave band
 #
-#     S_dpdx = (rho * g * k_f[:, None] * Kp_f[:, None] * np.cos(dirs_rad)[None, :])**2 * S_f_band #define the pressure gradient spectrum
-#     S_dpdy = (rho * g * k_f[:, None] * Kp_f[:, None] * np.sin(dirs_rad)[None, :])**2 * S_f_band
+#     # define the pressure gradient spectrum
+#     S_dpdx = (rho * g * k_f[:, None] * Kp_f[:, None] * np.cos(dirs_rad)[None, :])**2 * S_f_band #dpdx component
+#     S_dpdy = (rho * g * k_f[:, None] * Kp_f[:, None] * np.sin(dirs_rad)[None, :])**2 * S_f_band #dpdy component
 #
-#     p_rms = np.sqrt(np.trapezoid(S_f_band, freqs[awac_wave_band])) / 10000
+#     #define the pressure spectrum
+#     S_p = (rho * g * Kp_f[:, None])**2 * S_f_band
+#     prms = np.sqrt(np.trapezoid(S_p, freqs[awac_wave_band])) / 10000 #integrate to get prms value and convert to dbar / m
 #
 #     S_dpdx_f = np.trapezoid(S_dpdx, dirs, axis=1) #integrate over direction
 #     S_dpdy_f = np.trapezoid(S_dpdy, dirs, axis=1)  # integrate over direction
 #
-#     dpdx = np.sqrt(np.trapezoid(S_dpdx_f, freqs[awac_wave_band])) / 10000 #integrate over frequency and convert to dbar/m  #TODO: do I need to square the 10000 here?
+#     dpdx = np.sqrt(np.trapezoid(S_dpdx_f, freqs[awac_wave_band])) / 10000 #integrate over frequency and convert to dbar/m
 #     dpdy = np.sqrt(np.trapezoid(S_dpdy_f, freqs[awac_wave_band])) / 10000  # integrate over frequency and convert to dbar/m
 #
 #     #open the das data from the same day
@@ -1917,14 +1922,16 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #     dpdx_array[i] = dpdx
 #     dpdy_array[i] = dpdy
 #     das_amplitude_array[i] = das_amplitude
+#     p_array[i] = prms
 #     timestamps.append(datetime.strptime(timestamp, "%Y-%m-%d_%H_%M_%S"))
-#     # eps_x_array[i] = eps_x
-#     # eps_y_array[i] = eps_y
+#     eps_x_array[i] = eps_x
+#     eps_y_array[i] = eps_y
 #
 # #save the arrays
 # data = {
 #     'dpdx':dpdx_array,
 #     'dpdy':dpdy_array,
+#     'pres':p_array,
 #     'timestamps':timestamps,
 #     'das_amplitude':das_amplitude_array,
 #     'theta_incident':theta_incident,
@@ -1932,7 +1939,7 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # }
 #
 # np.savez(f'./data/frf_awac/wave_direction/Channel_{channel}_wavedir_vars_burst.npz', data)
-#
+
 # saved_data = np.load(f'./data/frf_awac/wave_direction/Channel_{channel}_wavedir_vars_burst.npz', allow_pickle=True)
 #
 # saved_data = saved_data['arr_0'].item()
@@ -2256,7 +2263,6 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #TODO: 2. evaluate DAS amplitude at the spectral peak like I am doing for dpdx and dpdy currently. Or integrate over a narrow band near the spectral peak to suppress noise
 #TODO: started with one.
 
-#TODO: may need to redo some stuff with teh new DAS intervals at 35 mins?
 
 
 
@@ -2488,7 +2494,7 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # plt.axhline(1, linestyle='--', color='black')
 # plt.ylabel('F600 / F300')
 # plt.xlabel('RMS Wave Height (m)')
-# plt.title('Ratio of Integrated Energy Flux - 600m AWAC / 300m AWAC')
+# plt.title('Ratio of Energy Flux - 600m AWAC / 300m AWAC')
 # plt.savefig('./figures/area_matching/AWAC_ratios.png')
 # plt.show()
 # plt.close('all')
@@ -2521,15 +2527,18 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #
 #     results[awac] = channel
 #
-# print(f'Channel for 300m xFRF AWAC: {results[300]}')
-# print(f'Channel for 600m xFRF AWAC: {results[600]}')
+# print(f'Channel for 300m xFRF AWAC: {results[300]}')  #208
+# print(f'Channel for 600m xFRF AWAC: {results[600]}')  #402
 
 
 '''ENERGY FLUX CONSERVATION CHECK ACROSS CHANNELS'''
-# modeled_awac_data_dir = './data/frf_awac/calibration_coefficients_burst_600/Calib_2026-06-02_00_00_00.npz'
+# modeled_awac_data_dir = './data/frf_awac/calibration_coefficients_burst_600/Calib_2026-06-01_00_00_00.npz'
 # data = np.load(modeled_awac_data_dir, allow_pickle=True)['arr_0'].item()
 # Sf = data['awac_corrected_frequency_spectrum']
+# Sf_t = data['awac_corrected_directional_spectrum']
 # freqs = data['awac_frequency_bins']
+# dirs = data['awac_directional_bins']
+# dtheta = np.abs(dirs[1] - dirs[0])
 # h = data['water_depth']
 # T = 1 / freqs
 # wave_band = (freqs <= 0.3) & (freqs >= 0.05)
@@ -2539,11 +2548,13 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # g=9.81
 #
 # #get the groud speed at both channels
-# channel_0 = 405
+# channel_0 = 403
 # h0 = h[channel_0]
 # k0 = wavenumber(h0, T)
 # Cg0 = groupSpeed(h0, k0)
-# f0 = rho * g * np.trapezoid(Sf[channel_0, wave_band] * Cg0[wave_band], freqs[wave_band], axis=-1)
+# # f0 = rho * g * np.trapezoid(Sf[channel_0, wave_band] * Cg0[wave_band], freqs[wave_band], axis=-1)
+# f0 = rho * g * np.trapezoid((np.nansum(Sf_t[channel_0, wave_band, :], axis=-1) * dtheta) * Cg0[wave_band], freqs[wave_band], axis=-1) #be very careful using np.trapezoid over 0-360 directional bins
+# #np.nansum * bins is the more stable way to do the integration
 #
 # sum_squared_error = 0.0
 # n_valid = 0
@@ -2566,7 +2577,8 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 #     h1 = h[channel_1]
 #     k1 = wavenumber(h1, T)
 #     Cg1 = groupSpeed(h1, k1)
-#     f1 = rho * g * np.trapezoid(Sf[channel_1, wave_band] * Cg1[wave_band], freqs[wave_band], axis=-1)
+#     # f1 = rho * g * np.trapezoid(Sf[channel_1, wave_band] * Cg1[wave_band], freqs[wave_band], axis=-1)
+#     f1 = rho * g * np.trapezoid((np.nansum(Sf_t[channel_1, wave_band, :], axis=-1) * dtheta) * Cg1[wave_band], freqs[wave_band], axis=-1)
 #
 #     residual = f1 - f0
 #     if np.isfinite(residual) & ((ch >= 200) & (ch <= 1400)):
@@ -2578,10 +2590,10 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # rmse = np.sqrt(sum_squared_error/n_valid)
 #
 # plt.title(f'Energy Flux Residual v Channel Location, RMSE={rmse:.6f}')
-# plt.savefig('./figures/conEnFluxCheck.png')
+# # plt.savefig('./figures/conEnFluxCheck.png')
 # plt.show()
 # plt.close('all')
-
+#
 #
 # print(
 #     f'f0: {f0}',
