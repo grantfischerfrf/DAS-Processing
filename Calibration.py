@@ -436,7 +436,8 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
         k0 = wavenumber(h0, T)
 
         calibration_flag = np.ones(N_channels, dtype=int)
-        C = np.full(N_channels, np.nan, dtype=np.float32)
+        C = np.full(N_channels, np.nan, dtype=np.float32) #frequency independent calibration factor
+        C_f = np.full((N_channels, len(awac_freqs[awac_wave_band])), np.nan, dtype=np.float32) #frequency dependent calibration factor
         water_depth = np.full(N_channels, np.nan)
         S1_directional_spectrum = np.full((N_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32)
         S1_integrated_spectrum = np.full((N_channels, len(awac_freqs)), np.nan, dtype=np.float32)
@@ -635,7 +636,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
                 # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
                 scale = (Hmax / Hrms) ** 2
                 S1_integrated *= scale #apply scaling factor to the spectrum
-                S1_local *= scale  # OPTIONAL: apply the scaling factor to the spectrum
+                S1_local *= scale  # apply the scaling factor to the spectrum
 
             if ch == alongshore_channel_start - 1:  #if we are at the corner channel
                 h1_corner = h1 #save the water depth at the corner channel for later use in alongshore channels
@@ -648,28 +649,29 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             # convert surface elevation spectrum to pressure spectrum using linear wave theory
             Kp = 1 / np.cosh(k1_arr * h1) # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
 
-            pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2 # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory
+            pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2 # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory, shape : (n_freqs)
 
             # compute the calibration coefficient at each channel
             # first integrate both the DAS PSD and AWAC PSD over the desired wave band
             das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
 
-            das_psd_variance = np.trapezoid(
-                das_PSD[das_wave_band],
-                das_freqs[das_wave_band]
-            )  # integrated power spectral density of the DAS
+            das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band])  # integrated power spectral density of the DAS
 
-            awac_psd_variance = np.trapezoid(
-                pressure_spectrum[awac_wave_band],
-                awac_freqs[awac_wave_band]
-            )  # integrated power spectral density of the AWAC
+            awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band])  # integrated power spectral density of the AWAC
 
             if das_psd_variance <= 0:  # if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
                 calibration_flag[ch] = 0
                 continue
 
+            #frequency independent calibration
             calibration_coefficient = awac_psd_variance / das_psd_variance  # compute the calibration coefficient as the ratio of the integrated AWAC PSD over the integrated DAS PSD
             C[ch] = calibration_coefficient  # store the coefficient for this time and channel
+
+            #frequency dependent calibration
+            # interpolate the DAS PSD onto the AWAC frequency grid, original DAS PSD is on a different frequency grid with a small mismatch
+            das_PSD_on_awac_grid = np.interp(awac_freqs, das_freqs, das_PSD)  #FIXME: interpolation could possible introduce minor error
+            calib_coeff_freq_dependent = pressure_spectrum[awac_wave_band] / das_PSD_on_awac_grid[awac_wave_band] # compute the frequency-dependent calibration coefficient as the ratio of the AWAC pressure spectrum over the DAS PSD
+            C_f[ch, :] = calib_coeff_freq_dependent #store the frequency-dependent calibration coefficient for this time and channel, vectorized for all frequencies
 
             # # SANITY CHECK
             # # derive Hrms from corrected S1_local
@@ -682,6 +684,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
         save_dict = {
             "calibration_coefficient": C,
+            "calibration_coefficient_freq_dependent": C_f,
             "awac_corrected_directional_spectrum": S1_directional_spectrum,
             "awac_corrected_frequency_spectrum": S1_integrated_spectrum,
             'awac_frequency_bins': awac_freqs,

@@ -196,7 +196,7 @@ def get_AWAC_data(file_path):
     freqs = dirspec.coords['waveFrequency'].values  # frequency bins - 0.04 - 0.4975 Hz
     dirs = dirspec.coords['waveDirectionBins'].values  # direction bins - 0 - 355
     time = dirspec.coords['time'].values  # 719 time steps over the entire month collect - one 34 minute burst per hour - split DAS into 35 minute sections
-    dtheta = np.diff(dirs)[0]  # bin width in degrees - 5
+    dtheta = np.gradient(dirs)[0]  # bin width in degrees - 5
     df = np.gradient(freqs)  # frequency bin widths
     T = 1 / freqs  # wave period at each frequency
 
@@ -220,6 +220,51 @@ def get_orientation(channel):
         orientation = 'cross_shore'
 
     return orientation
+
+
+def compute_bulk_statistics(frequency_spectrum, direction_spectrum, frequency_bins, direction_bins, frequency_band=None, axis=-1):
+    #compute significant wave height, peak period, and peak direction from the 1D spectrums
+    if frequency_band is not None:
+        Hs = 4 * np.sqrt(integrate_spectrum(frequency_spectrum, frequency_bins[frequency_band], axis=axis, integrate_over='frequency')) #significant wave height
+    else:
+        Hs = 4 * np.sqrt(integrate_spectrum(frequency_spectrum, frequency_bins, axis=axis, integrate_over='frequency')) #significant wave height
+    Tp = 1 / frequency_bins[np.argmax(frequency_spectrum, axis=axis)] #peak period bin
+    Thetap = direction_bins[np.argmax(direction_spectrum, axis=axis)] #peak direction bin
+
+    return Hs, Tp, Thetap
+
+
+def smooth_spectrum(spectrum_1D, window=5, filter_type='boxcar', mode='wrap'):
+    #smooth the 1D spectrum using a moving average filter
+    # the type of filter window can be boxcar (rectangular) or gaussian
+    # mode determines what type of spectrum to use: wrap for 1d direction, reflect is normal for 1d frequency
+    # smoothing should preserve the spectral area - integrated quantities like Hs should not be effected
+
+    if filter_type == 'boxcar':
+        from scipy.ndimage import uniform_filter1d
+        return uniform_filter1d(spectrum_1D, size=window, axis=-1, mode=mode)
+
+    if filter_type == 'gaussian':
+        from scipy.ndimage import gaussian_filter1d
+        return gaussian_filter1d(spectrum_1D, sigma=1.5, axis=-1, mode=mode)
+
+    if filter_type not in ('boxcar' or 'gaussian'):
+        raise ValueError("Invalid smoothing type. Choose 'boxcar' or 'gaussian'.")
+
+
+def integrate_spectrum(spectrum, bins, axis, integrate_over):
+    #integrate over a 2D spectrum along a given axis (frequency or direction) to get a 1D spectrum
+    #if integrating over the directional bins, make sure to use np.nansum definition of integration instead of np.trapezoid
+
+    if integrate_over == 'direction':
+        db = np.gradient(bins)
+        return np.nansum(spectrum * db, axis=axis) #if direction bins are not uniform this will cause edge effects at the 0-355 boundary
+
+    if integrate_over == 'frequency':
+        return np.trapezoid(spectrum, bins, axis=axis)
+
+    if integrate_over not in ('frequency', 'direction'):
+        raise ValueError(f"Invalid integrate_over: {integrate_over!r}. Choose 'frequency' or 'direction'.")
 
 
 def ncsp2FRF(p1, p2):
