@@ -82,9 +82,6 @@ def parse_das_timestamp(file_path):
         return None
     return datetime.strptime(match.group(1), '%Y_%m_%d_%H_%M_%S')
 
-
-
-
 def compute_calibration_coefficient(files_to_process,
         save_folder,
         channel_grid,
@@ -424,6 +421,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
         S_f_theta_eta_selected = S_f_theta_eta[idx] #direction spectrum from the awac at a particular time index - need to filter the valid directions here if using a direction mask
         #this is an array of shape (62, 72) or (n_frequency bins, n_direction bins)
 
+        #Remember these are burst averaged quantities - averaged over 34 minutes
         gaugeDepth0 = gaugeDepth.values[idx] # depth from the water surface to the top of the gauge - positive value
         bottomElevation0 = bottomElevation.values[idx]# gauge vertical position in NAVD88 - negative value
         gaugeElevation0 = gaugeElevation.values.item() # bottom vertical location from altimiter - negative value
@@ -431,7 +429,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
         depth_from_bottom = gaugeElevation0 - bottomElevation0 #gives a positive depth up from the bottom
         h0 = gaugeDepth0 + depth_from_bottom #gives the total positive depth at the location of the awac at a particular time ([idx] gives the time index)
 
-        surfaceElevation = gaugeElevation0 + gaugeDepth0 #gives the surface elevation above or below NAVD88 reference
+        surfaceElevation = gaugeElevation0 + gaugeDepth0 #gives the surface elevation above or below NAVD88 reference - basically the average tidal signal (+/-) over the 34 minutes
 
         k0 = wavenumber(h0, T)
 
@@ -464,7 +462,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
                 S1_directional_spectrum[ch, :, :] = S1_local  #append to directional spectrum array for later saving
                 S1_integrated_spectrum[ch, :] = (np.nansum(S1_local, axis=1) * dtheta)
 
-                calibration_flag[ch] = 0 #set calibration flag to 0 because this is not a shoaled spectrum
+                calibration_flag[ch] = 0 #set calibration flag to 0 because this is not a shoaled spectrum  #TODO: restructure this so that calibration is valid on the awac channel still get a calibration coefficient
                 continue
 
             h1 = surfaceElevation - bed[ch]  # depth at the channel location. bed[ch] is a negative number. subtracting a negative number gives a positive water depth

@@ -2302,203 +2302,203 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 '''CALIBRATION CHECK V 600M AWAC AND 300M AWAC'''
 #check that the rms pressure predicted by linear theory matches the rms pressure derived at the 600m awac over all data bursts.
 
-modeled_awac_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-
-#data from the 600m awac
-file_path_600 = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
-S_f_theta_eta_600, freqs_600, dirs_600, time_600, dtheta_600, df_600, T_600, gaugeDepth_600, gaugeElevation_600, bottomElevation_600 = get_AWAC_data(file_path_600)
-
-#data from the 300m awac
-file_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
-S_f_theta_eta_300, freqs_300, dirs_300, time_300, dtheta_300, df_300, T_300, gaugeDepth_300, gaugeElevation_300, bottomElevation_300 = get_AWAC_data(file_path_300)
-
-
-#define the awac wave band
-awac_wave_band = (freqs_600 >= 0.05) & (freqs_600 <= 0.3)
-
-awac_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
-n_hours = len(awac_data_paths)
-
-channel_600 = 402 #approximate channel number
-channel_300 = 208
-
-#clip the frequency bins
-S_f_theta_eta_600 = S_f_theta_eta_600[:, awac_wave_band, :]
-awac600_freqs = freqs_600[awac_wave_band]
-S_f_theta_eta_300 = S_f_theta_eta_300[:, awac_wave_band, :]
-awac300_freqs = freqs_300[awac_wave_band]
-
-#initialize the figure for plotting
-fig, axes = plt.subplots(1, 1, figsize=(12, 12))
-axes.axline((0, 0), slope=1, color='black', linestyle='--') #diagonal line for one to one plot
-axes.set_xlabel('Modeled AWAC F (W/m)')
-axes.set_ylabel('AWAC 300m F (W/m)')
-
-hrms_list = []
-ratios = []
-# modeled_cumulative_flux = []
-# awac600_cumulative_flux = []
-sum_squared_error = 0.0  # error placeholder to fill incrementally during the loops
-n_valid = 0
-for hour in tqdm(range(n_hours), colour='yellow'):
-    # find the index that matches
-    target_time = sequence_number(awac_data_paths[hour])
-    idx_600 = np.argmin(np.abs(time_600 - np.datetime64(target_time)))  # matching index for the awac burst collects
-    idx_300 = np.argmin(np.abs(time_300 - np.datetime64(target_time)))
-
-    gaugeDepth0_600 = gaugeDepth_600.values[idx_600]   #TODO: turn into a function - get instantaneous depth.
-    bottomElevation0_600 = bottomElevation_600.values[idx_600]
-    gaugeElevation0_600 = gaugeElevation_600.values.item()
-
-    depth_from_bottom_600 = (bottomElevation0_600 - gaugeElevation0_600) * -1 #both of these values will be negative due to the datum reference
-    surfaceElevation = gaugeElevation_600 + gaugeDepth_600  # gives the surface elevation above or below NAVD88 reference
-    h600 = gaugeDepth0_600 + depth_from_bottom_600 #water depth at the 600m awac
-
-    gaugeDepth0_300 = gaugeDepth_300.values[idx_300]
-    bottomElevation0_300 = bottomElevation_300.values[idx_300]
-    gaugeElevation0_300 = gaugeElevation_300.values.item()
-
-    depth_from_bottom_300 = (bottomElevation0_300 - gaugeElevation0_300) * -1  # both of these values will be negative due to the datum reference
-    h300 = gaugeDepth0_300 + depth_from_bottom_300  # water depth at the 300m awac
-
-    #load in the modeled awac data
-    # pull AWAC spectrum
-    modeled_awac_data_path = os.path.join(modeled_awac_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
-    modeled_awac_data = np.load(modeled_awac_data_path, allow_pickle=True)  # read the data
-    modeled_awac_data = modeled_awac_data['arr_0'].item()  # open the dictionary and get past the initial format
-
-    C = modeled_awac_data['calibration_coefficient']  # calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
-    modeled_awac_Sf = modeled_awac_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
-    modeled_awac_freqs = modeled_awac_data['awac_frequency_bins']  # awac frequency bins
-    modeled_awac_wave_band = (modeled_awac_freqs >= 0.05) & (modeled_awac_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
-    modeled_awac_freqs = modeled_awac_freqs[modeled_awac_wave_band]
-    modeled_awac_dirs = modeled_awac_data['awac_directional_bins']  # awac directional bins
-    h = modeled_awac_data['water_depth']  # water depth along the cable
-    calibration_flag = modeled_awac_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
-
-    # define constants
-    rho = 1025  # kg/m^3 density of seawater
-    g = 9.81  # m/s^2 gravitational acceleration
-
-    #water depth at the location of the awac
-    h_local_600 = h[channel_600]
-    h_local_300 = h[channel_300]
-
-    #load wave information for the 600m awac
-    awac600_T = 1 / awac600_freqs  # convert awac frequency bins to period
-    awac600_k = wavenumber(h600, awac600_T)  # awac wavenumber at each period / frequency bin
-    awac600_Kp = 1 / np.cosh(awac600_k * h600)  # pressure response factor at each awac wavenumber
-
-    awac300_T = 1 / awac600_freqs  # convert awac frequency bins to period
-    awac300_k = wavenumber(h300, awac300_T)  # awac wavenumber at each period / frequency bin
-    awac300_Kp = 1 / np.cosh(awac300_k * h300)  # pressure response factor at each awac wavenumber
-
-    #load wave information for the modeled awac
-    modeled_awac_t = 1 / modeled_awac_freqs
-    modeled_awac_k = wavenumber(h_local_600, modeled_awac_t)
-    modeled_awac_Kp = 1 / np.cosh(modeled_awac_k * h_local_600)
-
-    # convert_the awac600 SSE frequency spectrum to pressure using linear theory
-    # integrate the directional spectra over direction
-    Seta_f_600awac = np.nansum(S_f_theta_eta_600[idx_600], axis=-1) * dtheta_600
-    Sp_f_600awac = (Seta_f_600awac * (rho * g * awac600_Kp)**2) / 1e8 #convert to dbar
-    Seta_f_300awac = np.nansum(S_f_theta_eta_300[idx_300], axis=-1) * dtheta_300
-    Sp_f_300awac = (Seta_f_300awac * (rho * g * awac300_Kp)**2) / 1e8 #convert to dbar
-
-    # convert modeled awac SSE spectrum to pressure spectrum using linear theory
-    modeled_Seta_f = modeled_awac_Sf[channel_300, modeled_awac_wave_band]  #modeled spectrum at the particular AWAC location.
-    modeled_Sp_f = (modeled_Seta_f * (rho * g * modeled_awac_Kp)**2) / 1e8
-
-    #compare rms pressure values
-    modeled_Prms = np.sqrt(np.trapezoid(modeled_Sp_f, modeled_awac_freqs))
-    awac600_Prms = np.sqrt(np.trapezoid(Sp_f_600awac, awac600_freqs))
-    awac300_Prms = np.sqrt(np.trapezoid(Sp_f_300awac, awac300_freqs))
-
-    #compute group speeds
-    modeled_Cg = groupSpeed(h_local_600, modeled_awac_k)
-    awac600_Cg = groupSpeed(h600, awac600_k)
-    awac300_Cg = groupSpeed(h300, awac300_k)
-
-    # #compute energy flux as a function of frequency
-    # modeled_F_f = rho * g * modeled_Seta_f * modeled_Cg
-    # awac600_F_f = rho * g * Seta_f_600awac * awac600_Cg
-    # awac300_F_f = rho * g * Seta_f_300awac * awac300_Cg
-
-    #compute integrated energy flux
-    modeled_F = rho * g * np.trapezoid(modeled_Seta_f * modeled_Cg, modeled_awac_freqs)
-    awac600_F = rho * g * np.trapezoid(Seta_f_600awac * awac600_Cg, awac600_freqs)
-    awac300_F = rho * g * np.trapezoid(Seta_f_300awac * awac300_Cg, awac300_freqs)
-
-    # print(
-    #     f"300: {awac300_F:.3f}, "
-    #     f"Model: {modeled_F:.3f}, "
-    #     f"600: {awac600_F:.3f}"
-    # )
-
-    # #cumulativly integrate
-    # modeled_F_cumu = cumulative_trapezoid(modeled_F_f, modeled_awac_freqs, initial=0)
-    # awac600_F_cumu = cumulative_trapezoid(awac600_F_f, awac600_freqs, initial=0)
-    # awac300_F_cumu = cumulative_trapezoid(awac300_F_f, awac300_freqs, initial=0)
-    # modeled_cumulative_flux.append(modeled_F_cumu)
-    # awac600_cumulative_flux.append(awac600_F_cumu)
-
-    # modeled_Hrms = np.sqrt(np.trapezoid(modeled_Seta_f, modeled_awac_freqs))
-    awac600_Hrms = np.sqrt(8 * np.trapezoid(Seta_f_600awac, awac600_freqs))
-    awac300_Hrms = np.sqrt(8 * np.trapezoid(Seta_f_300awac, awac300_freqs))
-    hrms_list.append(awac600_Hrms)
-    ratios.append(awac600_F / awac300_F)
-
-    # axes.scatter(modeled_Prms, awac300_Prms, marker='P', color='blue', s=5, alpha=0.5)
-    axes.scatter(modeled_F, awac300_F, marker='P', color='blue', s=5, alpha=0.5)
-
-    error = awac300_F - modeled_F
-    sum_squared_error += error ** 2
-    n_valid += 1
-
-    # print(f'modeled: {modeled_Prms:.6f}')
-    # print(f'awac600: {awac600_Prms:.6f}')
-
-    #sanity plot - comparison of spectral shape
-    # plt.plot(modeled_awac_freqs, modeled_Seta_f, color='red', label='modeled awac spectrum')
-    # plt.plot(awac600_freqs, Seta_f_600awac, color='blue', label='awac600m')
-    # # plt.plot(awac300_freqs, Seta_f_300awac, color='green', label='awac300m')
-    # plt.legend()
-    # plt.show()
-    # plt.close('all')
-
-    #sanity plot - cumulative integral
-    # plt.figure(figsize=(10, 10))
-    # plt.plot(modeled_awac_freqs, modeled_F_cumu, label='modeled awac')
-    # plt.plot(awac600_freqs, awac600_F_cumu, label='awac600m')
-    # plt.xlabel('Frequency (Hz)')
-    # plt.ylabel('Cumulative Energy Flux (W/m)')
-    # plt.title(f'Cumulative Energy Flux — {target_time}')
-    # plt.legend()
-    # plt.grid(True)
-    #
-    # plt.tight_layout()
-    # plt.show()
-
-rmse = np.sqrt(sum_squared_error / n_valid)
-print(f"RMSE = {rmse:.6f} W/m")
-
-axes.set_aspect('equal')
-axes.set_title(f'Modeled Energy Flux v 300m AWAC Energy Flux, RMSE:{rmse:.6f} (W/m)')
-plt.tight_layout()
-plt.savefig('./figures/area_matching/modelv300m_RMSE_plot.png')
-plt.show()
-plt.close('all')
-
-plt.figure(figsize=(8, 8))
-plt.scatter(hrms_list, ratios, color='blue', marker='P', s=10)
-plt.axhline(1, linestyle='--', color='black')
-plt.ylabel('F600 / F300')
-plt.xlabel('RMS Wave Height (m)')
-plt.title('Ratio of Energy Flux - 600m AWAC / 300m AWAC')
-plt.savefig('./figures/area_matching/AWAC_ratios.png')
-plt.show()
-plt.close('all')
-
+# modeled_awac_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+#
+# #data from the 600m awac
+# file_path_600 = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+# S_f_theta_eta_600, freqs_600, dirs_600, time_600, dtheta_600, df_600, T_600, gaugeDepth_600, gaugeElevation_600, bottomElevation_600 = get_AWAC_data(file_path_600)
+#
+# #data from the 300m awac
+# file_path_300 = './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+# S_f_theta_eta_300, freqs_300, dirs_300, time_300, dtheta_300, df_300, T_300, gaugeDepth_300, gaugeElevation_300, bottomElevation_300 = get_AWAC_data(file_path_300)
+#
+#
+# #define the awac wave band
+# awac_wave_band = (freqs_600 >= 0.05) & (freqs_600 <= 0.3)
+#
+# awac_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
+# n_hours = len(awac_data_paths)
+#
+# channel_600 = 402 #approximate channel number
+# channel_300 = 208
+#
+# #clip the frequency bins
+# S_f_theta_eta_600 = S_f_theta_eta_600[:, awac_wave_band, :]
+# awac600_freqs = freqs_600[awac_wave_band]
+# S_f_theta_eta_300 = S_f_theta_eta_300[:, awac_wave_band, :]
+# awac300_freqs = freqs_300[awac_wave_band]
+#
+# #initialize the figure for plotting
+# fig, axes = plt.subplots(1, 1, figsize=(12, 12))
+# axes.axline((0, 0), slope=1, color='black', linestyle='--') #diagonal line for one to one plot
+# axes.set_xlabel('Modeled AWAC F (W/m)')
+# axes.set_ylabel('AWAC 300m F (W/m)')
+#
+# hrms_list = []
+# ratios = []
+# # modeled_cumulative_flux = []
+# # awac600_cumulative_flux = []
+# sum_squared_error = 0.0  # error placeholder to fill incrementally during the loops
+# n_valid = 0
+# for hour in tqdm(range(n_hours), colour='yellow'):
+#     # find the index that matches
+#     target_time = sequence_number(awac_data_paths[hour])
+#     idx_600 = np.argmin(np.abs(time_600 - np.datetime64(target_time)))  # matching index for the awac burst collects
+#     idx_300 = np.argmin(np.abs(time_300 - np.datetime64(target_time)))
+#
+#     gaugeDepth0_600 = gaugeDepth_600.values[idx_600]   #TODO: turn into a function - get instantaneous depth.
+#     bottomElevation0_600 = bottomElevation_600.values[idx_600]
+#     gaugeElevation0_600 = gaugeElevation_600.values.item()
+#
+#     depth_from_bottom_600 = (bottomElevation0_600 - gaugeElevation0_600) * -1 #both of these values will be negative due to the datum reference
+#     surfaceElevation = gaugeElevation_600 + gaugeDepth_600  # gives the surface elevation above or below NAVD88 reference
+#     h600 = gaugeDepth0_600 + depth_from_bottom_600 #water depth at the 600m awac
+#
+#     gaugeDepth0_300 = gaugeDepth_300.values[idx_300]
+#     bottomElevation0_300 = bottomElevation_300.values[idx_300]
+#     gaugeElevation0_300 = gaugeElevation_300.values.item()
+#
+#     depth_from_bottom_300 = (bottomElevation0_300 - gaugeElevation0_300) * -1  # both of these values will be negative due to the datum reference
+#     h300 = gaugeDepth0_300 + depth_from_bottom_300  # water depth at the 300m awac
+#
+#     #load in the modeled awac data
+#     # pull AWAC spectrum
+#     modeled_awac_data_path = os.path.join(modeled_awac_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
+#     modeled_awac_data = np.load(modeled_awac_data_path, allow_pickle=True)  # read the data
+#     modeled_awac_data = modeled_awac_data['arr_0'].item()  # open the dictionary and get past the initial format
+#
+#     C = modeled_awac_data['calibration_coefficient']  # calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
+#     modeled_awac_Sf = modeled_awac_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
+#     modeled_awac_freqs = modeled_awac_data['awac_frequency_bins']  # awac frequency bins
+#     modeled_awac_wave_band = (modeled_awac_freqs >= 0.05) & (modeled_awac_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
+#     modeled_awac_freqs = modeled_awac_freqs[modeled_awac_wave_band]
+#     modeled_awac_dirs = modeled_awac_data['awac_directional_bins']  # awac directional bins
+#     h = modeled_awac_data['water_depth']  # water depth along the cable
+#     calibration_flag = modeled_awac_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+#
+#     # define constants
+#     rho = 1025  # kg/m^3 density of seawater
+#     g = 9.81  # m/s^2 gravitational acceleration
+#
+#     #water depth at the location of the awac
+#     h_local_600 = h[channel_600]
+#     h_local_300 = h[channel_300]
+#
+#     #load wave information for the 600m awac
+#     awac600_T = 1 / awac600_freqs  # convert awac frequency bins to period
+#     awac600_k = wavenumber(h600, awac600_T)  # awac wavenumber at each period / frequency bin
+#     awac600_Kp = 1 / np.cosh(awac600_k * h600)  # pressure response factor at each awac wavenumber
+#
+#     awac300_T = 1 / awac600_freqs  # convert awac frequency bins to period
+#     awac300_k = wavenumber(h300, awac300_T)  # awac wavenumber at each period / frequency bin
+#     awac300_Kp = 1 / np.cosh(awac300_k * h300)  # pressure response factor at each awac wavenumber
+#
+#     #load wave information for the modeled awac
+#     modeled_awac_t = 1 / modeled_awac_freqs
+#     modeled_awac_k = wavenumber(h_local_600, modeled_awac_t)
+#     modeled_awac_Kp = 1 / np.cosh(modeled_awac_k * h_local_600)
+#
+#     # convert_the awac600 SSE frequency spectrum to pressure using linear theory
+#     # integrate the directional spectra over direction
+#     Seta_f_600awac = np.nansum(S_f_theta_eta_600[idx_600], axis=-1) * dtheta_600
+#     Sp_f_600awac = (Seta_f_600awac * (rho * g * awac600_Kp)**2) / 1e8 #convert to dbar
+#     Seta_f_300awac = np.nansum(S_f_theta_eta_300[idx_300], axis=-1) * dtheta_300
+#     Sp_f_300awac = (Seta_f_300awac * (rho * g * awac300_Kp)**2) / 1e8 #convert to dbar
+#
+#     # convert modeled awac SSE spectrum to pressure spectrum using linear theory
+#     modeled_Seta_f = modeled_awac_Sf[channel_300, modeled_awac_wave_band]  #modeled spectrum at the particular AWAC location.
+#     modeled_Sp_f = (modeled_Seta_f * (rho * g * modeled_awac_Kp)**2) / 1e8
+#
+#     #compare rms pressure values
+#     modeled_Prms = np.sqrt(np.trapezoid(modeled_Sp_f, modeled_awac_freqs))
+#     awac600_Prms = np.sqrt(np.trapezoid(Sp_f_600awac, awac600_freqs))
+#     awac300_Prms = np.sqrt(np.trapezoid(Sp_f_300awac, awac300_freqs))
+#
+#     #compute group speeds
+#     modeled_Cg = groupSpeed(h_local_600, modeled_awac_k)
+#     awac600_Cg = groupSpeed(h600, awac600_k)
+#     awac300_Cg = groupSpeed(h300, awac300_k)
+#
+#     # #compute energy flux as a function of frequency
+#     # modeled_F_f = rho * g * modeled_Seta_f * modeled_Cg
+#     # awac600_F_f = rho * g * Seta_f_600awac * awac600_Cg
+#     # awac300_F_f = rho * g * Seta_f_300awac * awac300_Cg
+#
+#     #compute integrated energy flux
+#     modeled_F = rho * g * np.trapezoid(modeled_Seta_f * modeled_Cg, modeled_awac_freqs)
+#     awac600_F = rho * g * np.trapezoid(Seta_f_600awac * awac600_Cg, awac600_freqs)
+#     awac300_F = rho * g * np.trapezoid(Seta_f_300awac * awac300_Cg, awac300_freqs)
+#
+#     # print(
+#     #     f"300: {awac300_F:.3f}, "
+#     #     f"Model: {modeled_F:.3f}, "
+#     #     f"600: {awac600_F:.3f}"
+#     # )
+#
+#     # #cumulativly integrate
+#     # modeled_F_cumu = cumulative_trapezoid(modeled_F_f, modeled_awac_freqs, initial=0)
+#     # awac600_F_cumu = cumulative_trapezoid(awac600_F_f, awac600_freqs, initial=0)
+#     # awac300_F_cumu = cumulative_trapezoid(awac300_F_f, awac300_freqs, initial=0)
+#     # modeled_cumulative_flux.append(modeled_F_cumu)
+#     # awac600_cumulative_flux.append(awac600_F_cumu)
+#
+#     # modeled_Hrms = np.sqrt(np.trapezoid(modeled_Seta_f, modeled_awac_freqs))
+#     awac600_Hrms = np.sqrt(8 * np.trapezoid(Seta_f_600awac, awac600_freqs))
+#     awac300_Hrms = np.sqrt(8 * np.trapezoid(Seta_f_300awac, awac300_freqs))
+#     hrms_list.append(awac600_Hrms)
+#     ratios.append(awac600_F / awac300_F)
+#
+#     # axes.scatter(modeled_Prms, awac300_Prms, marker='P', color='blue', s=5, alpha=0.5)
+#     axes.scatter(modeled_F, awac300_F, marker='P', color='blue', s=5, alpha=0.5)
+#
+#     error = awac300_F - modeled_F
+#     sum_squared_error += error ** 2
+#     n_valid += 1
+#
+#     # print(f'modeled: {modeled_Prms:.6f}')
+#     # print(f'awac600: {awac600_Prms:.6f}')
+#
+#     #sanity plot - comparison of spectral shape
+#     # plt.plot(modeled_awac_freqs, modeled_Seta_f, color='red', label='modeled awac spectrum')
+#     # plt.plot(awac600_freqs, Seta_f_600awac, color='blue', label='awac600m')
+#     # # plt.plot(awac300_freqs, Seta_f_300awac, color='green', label='awac300m')
+#     # plt.legend()
+#     # plt.show()
+#     # plt.close('all')
+#
+#     #sanity plot - cumulative integral
+#     # plt.figure(figsize=(10, 10))
+#     # plt.plot(modeled_awac_freqs, modeled_F_cumu, label='modeled awac')
+#     # plt.plot(awac600_freqs, awac600_F_cumu, label='awac600m')
+#     # plt.xlabel('Frequency (Hz)')
+#     # plt.ylabel('Cumulative Energy Flux (W/m)')
+#     # plt.title(f'Cumulative Energy Flux — {target_time}')
+#     # plt.legend()
+#     # plt.grid(True)
+#     #
+#     # plt.tight_layout()
+#     # plt.show()
+#
+# rmse = np.sqrt(sum_squared_error / n_valid)
+# print(f"RMSE = {rmse:.6f} W/m")
+#
+# axes.set_aspect('equal')
+# axes.set_title(f'Modeled Energy Flux v 300m AWAC Energy Flux, RMSE:{rmse:.6f} (W/m)')
+# plt.tight_layout()
+# plt.savefig('./figures/area_matching/modelv300m_RMSE_plot.png')
+# plt.show()
+# plt.close('all')
+#
+# plt.figure(figsize=(8, 8))
+# plt.scatter(hrms_list, ratios, color='blue', marker='P', s=10)
+# plt.axhline(1, linestyle='--', color='black')
+# plt.ylabel('F600 / F300')
+# plt.xlabel('RMS Wave Height (m)')
+# plt.title('Ratio of Energy Flux - 600m AWAC / 300m AWAC')
+# plt.savefig('./figures/area_matching/AWAC_ratios.png')
+# plt.show()
+# plt.close('all')
+#
 
 '''FIND EXACT CHANNEL LOCATION OF THE AWACS'''
 # channel_grid_path = './data/frf_awac/channel_grid.pkl'
@@ -2601,8 +2601,26 @@ plt.close('all')
 # )
 
 
+'''AVERAGE THE FREQUENCY DEPENDENT CALIBRATION FACTOR OVER ALL TIME BURSTS'''
+data_dir = './data/frf_awac/calibration_coefficients_burst_600' #directory
+calib_data_paths = sorted(glob.glob(os.path.join(data_dir, '*.npz')), key=sequence_number) #list of all calibration coefficient files in the directory
 
+c_all = [] #empty array for calibration coefficients
+tqdm.write('Loading Calibration Coefficients...')
+for path in tqdm(calib_data_paths, colour='yellow'):
 
+    data = np.load(path, allow_pickle=True)  #load data
+    data = data['arr_0'].item() #go through first header
+
+    c = data['calibration_coefficient_freq_dependent'] #pull only the frequency dependent calibration coefficient
+
+    c_all.append(c) #append to list
+
+c_all = np.stack(c_all) #shape (n_bursts, n_channels, n_freqs)
+
+C_avg = np.nanmedian(c_all, axis=0) #take the time median of the frequency dependent calibration coefficient
+
+np.save(os.path.join('./data/frf_awac', 'avg_calibCoeff_freqDependent.npy'), C_avg) #save data
 
 
 

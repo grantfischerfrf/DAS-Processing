@@ -6,9 +6,11 @@ import xarray as xr
 import re
 import os
 import json
+import glob
 import h5py
 from scipy.signal import welch
 from scipy.interpolate import interp1d
+from tqdm import tqdm
 
 
 
@@ -195,7 +197,7 @@ def get_AWAC_data(file_path):
     S_f_theta_eta = dirspec.values  # PSD S_eta(N_samples, f, theta)
     freqs = dirspec.coords['waveFrequency'].values  # frequency bins - 0.04 - 0.4975 Hz
     dirs = dirspec.coords['waveDirectionBins'].values  # direction bins - 0 - 355
-    time = dirspec.coords['time'].values  # 719 time steps over the entire month collect - one 34 minute burst per hour - split DAS into 35 minute sections
+    time = dirspec.coords['time'].values  # 719 time steps over the entire month collect - one 34 minute burst per hour
     dtheta = np.gradient(dirs)[0]  # bin width in degrees - 5
     df = np.gradient(freqs)  # frequency bin widths
     T = 1 / freqs  # wave period at each frequency
@@ -258,13 +260,34 @@ def integrate_spectrum(spectrum, bins, axis, integrate_over):
 
     if integrate_over == 'direction':
         db = np.gradient(bins)
-        return np.nansum(spectrum * db, axis=axis) #if direction bins are not uniform this will cause edge effects at the 0-355 boundary
+        return np.nansum(spectrum * db, axis=axis) #FIXME: if direction bins are not uniform this will cause edge effects at the 0-355 boundary - future problem
 
     if integrate_over == 'frequency':
         return np.trapezoid(spectrum, bins, axis=axis)
 
     if integrate_over not in ('frequency', 'direction'):
         raise ValueError(f"Invalid integrate_over: {integrate_over!r}. Choose 'frequency' or 'direction'.")
+
+
+def average_C_f_over_all_bursts(data_dir, save_dir):
+
+    calib_data_paths = sorted(glob.glob(os.path.join(data_dir, '*.npz')), key=sequence_number)  # list of all calibration coefficient files in the directory
+
+    c_all = []  # empty array for calibration coefficients
+    tqdm.write('Loading Calibration Coefficients...')
+    for path in tqdm(calib_data_paths, colour='yellow'):
+        data = np.load(path, allow_pickle=True)  # load data
+        data = data['arr_0'].item()  # go through first header
+
+        c = data['calibration_coefficient_freq_dependent']  # pull only the frequency dependent calibration coefficient
+
+        c_all.append(c)  # append to list
+
+    c_all = np.stack(c_all)  # shape (n_bursts, n_channels, n_freqs)
+
+    C_avg = np.nanmedian(c_all, axis=0)  # take the temporal median of the frequency dependent calibration coefficient
+
+    np.save(os.path.join(save_dir, 'avg_calibCoeff_freqDependent.npy'), C_avg)  # save data
 
 
 def ncsp2FRF(p1, p2):
@@ -488,16 +511,21 @@ def build_DAS_XYZ_grid():
 
 if __name__ == "__main__":
 
-    #read_Json Files - DAS configuration and engineering chain
-    optical_setup = './documentation/FRF_Fiber1Mode8_Fiber2Mode10_1.6mGL_opticalSetUp.json'
-    engineering_chain = './documentation/ONYX-0564 Fiber 1__SimpleLinearAssetChainFiber1_V2_v50_engineeringChain.json'
-    raw_file = os.getcwd() + '/data/raw_66/1400_UTC/decimator_2026-06-06_13.55.01_UTC_011456.h5'
-    read_Json(optical_setup)
+    # #read_Json Files - DAS configuration and engineering chain
+    # optical_setup = './documentation/FRF_Fiber1Mode8_Fiber2Mode10_1.6mGL_opticalSetUp.json'
+    # engineering_chain = './documentation/ONYX-0564 Fiber 1__SimpleLinearAssetChainFiber1_V2_v50_engineeringChain.json'
+    # raw_file = os.getcwd() + '/data/raw_66/1400_UTC/decimator_2026-06-06_13.55.01_UTC_011456.h5'
+    # read_Json(optical_setup)
+    #
+    # #read attributes
+    # with h5py.File(raw_file, 'r') as f:
+    #     # First, print root attributes
+    #     print_all_attributes(raw_file, f)
+    #     # Then, recursively visit all objects inside the file
+    #     f.visititems(print_all_attributes)
 
-    #read attributes
-    with h5py.File(raw_file, 'r') as f:
-        # First, print root attributes
-        print_all_attributes(raw_file, f)
-        # Then, recursively visit all objects inside the file
-        f.visititems(print_all_attributes)
+    #average frequency dependent calibration coefficient over all data bursts
+    save_dir = './data/frf_awac'
+    data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    c_all = average_C_f_over_all_bursts(data_dir, save_dir)
 
