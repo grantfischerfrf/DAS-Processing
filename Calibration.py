@@ -455,14 +455,33 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
             if ch == awac_channel:  #if the channel is the awac channel location
                 S1_local = S_f_theta_eta_selected.copy() #take the direction spectrum measured by the awac
+                S1_integrated = np.nansum(S1_local, axis=1) * dtheta #integrate the directional spectrum over all directions to get the frequency spectrum
 
                 water_depth[ch] = h0 #set the water depth equal to water depth at the awac location
                 valid_channels += 1  #channle is valid
 
                 S1_directional_spectrum[ch, :, :] = S1_local  #append to directional spectrum array for later saving
-                S1_integrated_spectrum[ch, :] = (np.nansum(S1_local, axis=1) * dtheta)
+                S1_integrated_spectrum[ch, :] = S1_integrated  #append to integrated spectrum array for later saving
 
-                calibration_flag[ch] = 0 #set calibration flag to 0 because this is not a shoaled spectrum  #TODO: restructure this so that calibration is valid on the awac channel still get a calibration coefficient
+                # compute calibration coefficient at the AWAC location using the unshoaled spectrum
+                Kp = 1 / np.cosh(k0 * h0)  # pressure response factor at the AWAC depth (z = -h0)
+                pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2  # convert surface elevation spectrum -> pressure spectrum
+
+                das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)
+                das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band])
+                awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band])
+
+                if das_psd_variance <= 0:
+                    calibration_flag[ch] = 0
+                    continue
+
+                # frequency independent calibration
+                C[ch] = awac_psd_variance / das_psd_variance
+
+                # frequency dependent calibration
+                das_PSD_on_awac_grid = np.interp(awac_freqs, das_freqs, das_PSD)
+                C_f[ch, :] = pressure_spectrum[awac_wave_band] / das_PSD_on_awac_grid[awac_wave_band]
+
                 continue
 
             h1 = surfaceElevation - bed[ch]  # depth at the channel location. bed[ch] is a negative number. subtracting a negative number gives a positive water depth
@@ -712,7 +731,7 @@ def process_worker_burst(burst_chunk, save_folder, DAS_XYZ_path, AWAC1_path, AWA
         Args:
             burst_chunk: list of (burst_start, file_list)
             AWAC1_path: 300m AWAC path
-            AWAC2_path: 600m AWAC path  #TODO: add later - will need to refactor
+            AWAC2_path: 600m AWAC path
             DAS_XYZ_path: x, y, depth of the DAS cable datatable path
         '''
 
@@ -740,7 +759,7 @@ def process_worker_burst(burst_chunk, save_folder, DAS_XYZ_path, AWAC1_path, AWA
     )
 
 
-#TODO: need to add the 600m AWAC in as well!
+#TODO: do I need to calibrate with both the das and awac on the same frequency grid
 
 
 #TODO: check whether the AWAC is getting its spectra from SUV or AUV

@@ -491,9 +491,9 @@ def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_tim
     fig, axes = plt.subplots(1, 1, figsize=(12, 8))
 
     line1 = axes.plot(model_freqs, Sp_f_model, color='blue', label='Modeled Pressure PSD (AWAC)')
-    line2 = axes.plot(das_freqs, Sp_f_das, color='red', linestyle = '--', label='DAS Pressure PSD (Calibrated)')
+    line2 = axes.plot(das_freqs, Sp_f_das, color='red', label='DAS Pressure PSD (Calibrated)')
     axes1 = axes.twinx()
-    line3 = axes1.plot(das_freqs, das_PSD[:, channel], color='green', label='DAS Phase Shift PSD')
+    line3 = axes1.plot(das_freqs, das_PSD[:, channel], color='green', linestyle='--', label='DAS Phase Shift PSD')
     axes1.set_ylabel('Phase Shift PSD (Rad²/Hz)', color='green')
     axes1.tick_params(axis='y', color='green', labelcolor='green', which='both')
     axes.set_xlabel('Frequency (Hz)')
@@ -711,7 +711,7 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
     plt.close('all')
 
 
-def AWAC300_v_AWAC600(awac_data_dir, start_time=None, end_time=None):
+def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
 
     if start_time is None and end_time is None:
         start_time = np.datetime64(datetime(2026, 6, 1, 0, 0, 0))
@@ -812,7 +812,7 @@ def AWAC300_v_AWAC600(awac_data_dir, start_time=None, end_time=None):
     fig.suptitle('AWAC 300m vs 600m Bulk Wave Parameter Comparison')
 
     plt.tight_layout()
-    plt.savefig('./figures/awac_bulk_stats_comparison.png', dpi=300) #TODO: no hard coded save paths
+    plt.savefig(os.path.join(save_dir, 'awac_bulk_stats_comparison.png'), dpi=300) #TODO: no hard coded save paths
     plt.show()
     plt.close('all')
 
@@ -880,9 +880,9 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
     fig, axes = plt.subplots(1, 1, figsize=(12, 8))
 
     line1 = axes.plot(model_freqs, Sp_f_model, color='blue', label='Modeled Pressure PSD (AWAC)')
-    line2 = axes.plot(model_freqs, Sp_f_das, color='red', linestyle='--', label='DAS Pressure PSD (Calibrated)')
+    line2 = axes.plot(model_freqs, Sp_f_das, color='red', label='DAS Pressure PSD (Calibrated)')
     axes1 = axes.twinx() #secondary y axis
-    line3 = axes1.plot(model_freqs, das_PSD_on_awac_grid, color='green', label='DAS Phase Shift PSD')
+    line3 = axes1.plot(model_freqs, das_PSD_on_awac_grid, color='green',  linestyle='--', label='DAS Phase Shift PSD')
     axes1.set_ylabel('Phase Shift PSD (Rad²/Hz)', color='green')
     axes1.tick_params(axis='y', color='green', labelcolor='green', which='both')
     axes.set_xlabel('Frequency (Hz)')
@@ -894,7 +894,7 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
 
     axes.legend(lines, labels, loc='best')
 
-    # plt.tight_layout()
+    plt.tight_layout()
     plt.savefig(f'{save_path}/channel_{channel}_time_{target_time}_area.png')
     plt.show()
     plt.close('all')
@@ -905,12 +905,14 @@ def C_f_v_Time(model_data_dir, save_path, channel):
     calib_data_paths = sorted(glob.glob(os.path.join(model_data_dir, '*.npz')), key=sequence_number)  # list of all calibration coefficient files in the directory
 
     c_all = []  # empty array for calibration coefficients
+    time = []  # empty array for time
 
     fig = plt.figure(figsize=(15, 8))
     axes = fig.add_subplot(111)
 
     tqdm.write('Loading Calibration Coefficients...')
     for path in tqdm(calib_data_paths, colour='yellow'):
+        time.append(sequence_number(path))
         data = np.load(path, allow_pickle=True)  # load data
         data = data['arr_0'].item()  # go through first header
 
@@ -925,12 +927,44 @@ def C_f_v_Time(model_data_dir, save_path, channel):
     wave_band = (freqs >= 0.05) & (freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
 
     #plot C as a function of frequency for all time
-    for c in c_all:   #TODO: log scale the y axis and put labels - compute bulk wave parameters from the calibrated DAS and the AWAC at the Boundary Condition
-        axes.plot(freqs[wave_band], c[channel, :], color='gray', alpha=0.1)
-    axes.plot(freqs[wave_band], C_avg[channel, :].T, color='blue', label='Median Calibration Coefficient')
+    time_mpl = mdates.date2num(time)  # convert time to matplotlib format
+    norm = plt.Normalize(min(time_mpl), max(time_mpl))
+    cmap = plt.get_cmap('viridis')  # choose a colormap
+    for c, t in zip(c_all, time_mpl):
+        axes.plot(freqs[wave_band], c[channel, :], color=plt.cm.viridis(norm(t)), alpha=0.5)
+    axes.plot(freqs[wave_band], C_avg[channel, :].T, color='red', linewidth=2, label='Median Calibration Coefficient')
+    axes.set_yscale('log')
+    axes.set_ylabel('Calibration Coefficient (-/-)')
+    axes.set_xlabel('Frequency (Hz)')
+    axes.legend()
+
+    # Colorbar
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    cbar = fig.colorbar(sm, ax=axes)
+    cbar.set_label('Time')
+    cbar.ax.yaxis.set_major_formatter(
+        mdates.DateFormatter('%m/%d/%Y')
+    )
 
     plt.savefig(f'{save_path}/channel_{channel}_C_f_v_time.png')
+    plt.show()
     plt.close('all')
+
+
+def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, save_path, channel, calibration='freq_independent'):
+    #compare the bulk wave statistics, Hs, Te, Thetap of both the model and the calibrated DAS for all timestamps
+
+    n_hours = len(das_data_paths)  # number of hours of data
+
+    for hour in tqdm(range(n_hours), colour='yellow'):
+        #pull the model and awac spectrum for each burst, allow for different types of calibration time averaging.
+
+
+
+
+
 
 if __name__ == "__main__":
 
@@ -945,6 +979,7 @@ if __name__ == "__main__":
     # endtime = datetime(2026, 6, 6, 23, 59, 59, tzinfo=timezone.utc)
 
     # xfrf 300m awac channel location 208. 600m awac is located at channel 402 --> approximate locations based on xFRF location of channels and AWAC
+
 
     '''CREATE WATERFALL PLOT'''
     # # savepath = './figures/20260601'
@@ -998,11 +1033,11 @@ if __name__ == "__main__":
     # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
     '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST - FREQUENCY INDEPENDENT CALIBRATION'''
-    # target_time = datetime(2026, 6, 14, 0, 0, 0) #target time to check spectra
-    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    # save_path = './figures/area_matching'
-    # Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=403)
+    target_time = datetime(2026, 6, 14, 0, 0, 0) #target time to check spectra
+    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    save_path = './figures/area_matching'
+    Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=800)
 
     '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
     # model_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
@@ -1017,31 +1052,39 @@ if __name__ == "__main__":
 
     '''BULK WAVE PARAM COMPARISON BETWEEN 300 AND 600 AWACS'''
     # awac_data_dir = './data/frf_awac/'
-    # AWAC300_v_AWAC600(awac_data_dir)
+    # save_dir = './figures'
+    # AWAC300_v_AWAC600(awac_data_dir, save_dir)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT - DAS V MODEL'''
-    # target_time = datetime(2026, 6, 14, 0, 0, 0)  # target time to check spectra
-    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    # save_path = './figures/area_matching_freq_dependent'
-    # C_f_path = './data/frf_awac/avg_calibCoeff_freqDependent.npy'
-    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, C_f_path, save_path, target_time, channel=403)
+    target_time = datetime(2026, 6, 14, 0, 0, 0)  # target time to check spectra
+    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    save_path = './figures/area_matching_freq_dependent'
+    avg_C_f_path = './data/frf_awac/avg_calibCoeff_freqDependent.npy'   #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
+    Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, avg_C_f_path, save_path, target_time, channel=800)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT OVER TIME'''
-    # average frequency dependent calibration coefficient over all data bursts
-    save_dir = './figures'
-    model_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    c_all = C_f_v_Time(model_dir, save_dir, channel=403)
+    # # average frequency dependent calibration coefficient over all data bursts
+    # save_dir = './figures'
+    # model_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    # C_f_v_Time(model_dir, save_dir, channel=402)
 
-    #TODO: run a comparison of spectra plot for the frequency dependent calibration factor - need to average the C_f across all time bursts to get a single calibration factor for each channel and freq
-    # The more time the C_f (and more sea states) the more robust the calibration should become. Frequency independent calibration preserves the DAS spectral shape but scales it so the integrated
-    # area under the curve matches the AWAC. Frequency dependent calibration does not preserve DAS PSD shape for a single burst, it will make it equivalent to the model AWAC PSD.
-    # work on slides next - include the question of whether I need to project the energy flux
+    '''COMPUTE BULK WAVE STATISTICS AT A CHANNEL'''
+    model_data_dir = './data/frf/awac/calibration_coefficients_burst_600'
+    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    save_path = './figures'
+    Compare_Bulk_Wave_Stats(das_data_paths, model_data_dir, save_path, channel=402)
 
 
 
-    #TODO: normalizing the strain by the distance from shore may help with fading in the middle. Not sure if you can do this, decay in strain signal may be related nonlinearly with distance
-    #TODO: normalize by z score???
+
+    #TODO:Finally do the wave direction stuff
+
+    #TODO: f - k plots of the DAS PSD one in the cross shore leg and one on the alongshore leg (need gradient in x to compute the wave number k)
+
+    # TODO: compute bulk wave parameters from the calibrated DAS and the AWAC at the Boundary Condition
+
+    #TODO: compute frequency dependent calibration factor based on temporal averaging over one day. Not over the entire collect.
 
     #TODO: look at the Radar data.
 

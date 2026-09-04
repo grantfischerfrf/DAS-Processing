@@ -140,6 +140,8 @@ if __name__ == "__main__":
     for file in tqdm(all_files):
         decimate_data(file, save_dir)
 
+    #possible jitter in the instrument sampling rate could leave it short of 500Hz, therefore a decimation down to 2Hz using every 250th point would leave the data short of 2Hz.
+
 
     '''EXTRAS'''
     #sanity plot

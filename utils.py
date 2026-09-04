@@ -226,6 +226,9 @@ def get_orientation(channel):
 
 def compute_bulk_statistics(frequency_spectrum, direction_spectrum, frequency_bins, direction_bins, frequency_band=None, axis=-1):
     #compute significant wave height, peak period, and peak direction from the 1D spectrums
+    if frequency_spectrum.ndim > 2:
+        raise ValueError("Frequency Spectrum must be 1D or 2D array. (N_time, N_freqs) or (N_freqs)")
+
     if frequency_band is not None:
         Hs = 4 * np.sqrt(integrate_spectrum(frequency_spectrum, frequency_bins[frequency_band], axis=axis, integrate_over='frequency')) #significant wave height
     else:
@@ -288,6 +291,8 @@ def average_C_f_over_all_bursts(data_dir, save_dir):
     C_avg = np.nanmedian(c_all, axis=0)  # take the temporal median of the frequency dependent calibration coefficient
 
     np.save(os.path.join(save_dir, 'avg_calibCoeff_freqDependent.npy'), C_avg)  # save data
+
+def average_C_f_over
 
 
 def ncsp2FRF(p1, p2):

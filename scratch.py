@@ -6,7 +6,7 @@ import pandas as pd
 import xarray as xr
 import os
 import glob
-from utils import sequence_number, time2dateTime, strain2phase, load_processedData, get_DAS_PSD, get_DAS_PSD_burst
+from utils import sequence_number, time2dateTime, strain2phase, load_processedData, get_DAS_PSD, get_DAS_PSD_burst, compute_bulk_statistics, integrate_spectrum, smooth_spectrum
 import re
 from FRF_DAS_plots import waterFall
 from scipy.signal import welch
@@ -1126,7 +1126,7 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # #TODO: wave number must be defined by small enough sliding windows in x - by definition the wave number is only valid locally using this math.
 
 
-'''wave and wind information and plotting'''
+'''PLOTS OF DUCK 17M WAVE AND WIND INFORMATION'''
 # data_path = './data/433p1_rt.nc'
 # data = xr.open_dataset(data_path)
 #
@@ -2500,6 +2500,7 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 # plt.close('all')
 #
 
+
 '''FIND EXACT CHANNEL LOCATION OF THE AWACS'''
 # channel_grid_path = './data/frf_awac/channel_grid.pkl'
 # channel_grid = np.load(channel_grid_path, allow_pickle=True)
@@ -2602,25 +2603,84 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 
 '''AVERAGE THE FREQUENCY DEPENDENT CALIBRATION FACTOR OVER ALL TIME BURSTS'''
-data_dir = './data/frf_awac/calibration_coefficients_burst_600' #directory
-calib_data_paths = sorted(glob.glob(os.path.join(data_dir, '*.npz')), key=sequence_number) #list of all calibration coefficient files in the directory
+# data_dir = './data/frf_awac/calibration_coefficients_burst_600' #directory
+# calib_data_paths = sorted(glob.glob(os.path.join(data_dir, '*.npz')), key=sequence_number) #list of all calibration coefficient files in the directory
+#
+# c_all = [] #empty array for calibration coefficients
+# tqdm.write('Loading Calibration Coefficients...')
+# for path in tqdm(calib_data_paths, colour='yellow'):
+#
+#     data = np.load(path, allow_pickle=True)  #load data
+#     data = data['arr_0'].item() #go through first header
+#
+#     c = data['calibration_coefficient_freq_dependent'] #pull only the frequency dependent calibration coefficient
+#
+#     c_all.append(c) #append to list
+#
+# c_all = np.stack(c_all) #shape (n_bursts, n_channels, n_freqs)
+#
+# C_avg = np.nanmedian(c_all, axis=0) #take the time median of the frequency dependent calibration coefficient
+#
+# np.save(os.path.join('./data/frf_awac', 'avg_calibCoeff_freqDependent.npy'), C_avg) #save data
 
-c_all = [] #empty array for calibration coefficients
-tqdm.write('Loading Calibration Coefficients...')
-for path in tqdm(calib_data_paths, colour='yellow'):
 
-    data = np.load(path, allow_pickle=True)  #load data
-    data = data['arr_0'].item() #go through first header
 
-    c = data['calibration_coefficient_freq_dependent'] #pull only the frequency dependent calibration coefficient
+'''BULK WAVE STATISTICS XFRF 600M AWAC'''
+# starttime = datetime(2026, 6, 1, 0, 0, 0) #startime to clip data
+# starttime64 = np.datetime64(starttime)
+# endtime = datetime(2026, 6, 14, 8, 0, 0) #end time to clip data
+# endtime64 = np.datetime64(endtime)
+#
+#
+# awac_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+# S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(awac_path) #load awac data
+#
+# time_mask = (time >= starttime64) & (time <= endtime64) #target data mask
+#
+# #mask desired variables in place
+# S_f_theta_eta = S_f_theta_eta[time_mask, ...]
+# time = time[time_mask]
+#
+# S_f = smooth_spectrum(
+#     integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction'),
+#     window=5, filter_type='gaussian', mode='wrap')
+# S_t = smooth_spectrum(
+#     integrate_spectrum(S_f_theta_eta, freqs, axis=1, integrate_over='frequency'),
+#     window=5, filter_type='gaussian', mode='wrap')
+#
+# Hs, Tp, thetap = compute_bulk_statistics(S_f, S_t, freqs, dirs)
+#
+# #plot the bulk statistics over time
+# fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+#
+# axes[0].scatter(time, Hs, color='blue', s=10)
+# axes[0].set_ylabel('Significant Wave Height (m)')
+# axes[0].set_title('Significant Wave Height')
+# axes[0].grid()
+#
+# axes[1].scatter(time, Tp, color='orange', s=10)
+# axes[1].set_ylabel('Peak Period (s)')
+# axes[1].set_title('Peak Period')
+# axes[1].grid()
+#
+# axes[2].scatter(time, thetap, color='green', s=10)
+# axes[2].set_ylabel('Peak Direction (deg)')
+# axes[2].axhline(71.8535, color='black', linestyle='--', label='FRF Shore Normal')
+# axes[2].set_xlabel('Time')
+# axes[2].set_title('Peak Direction')
+# axes[2].grid()
+# axes[2].legend()
+#
+# fig.suptitle(f'Bulk Wave Statistics from AWAC 600m Data ({starttime.strftime("%Y_%m_%d_%H")} to {endtime.strftime("%Y_%m_%d_%H")})', fontsize=16, fontweight='bold')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/wave_information/AWAC600_bulkWaveStats.png')
+# plt.show()
+# plt.close('all')
 
-    c_all.append(c) #append to list
 
-c_all = np.stack(c_all) #shape (n_bursts, n_channels, n_freqs)
 
-C_avg = np.nanmedian(c_all, axis=0) #take the time median of the frequency dependent calibration coefficient
 
-np.save(os.path.join('./data/frf_awac', 'avg_calibCoeff_freqDependent.npy'), C_avg) #save data
 
 
 
