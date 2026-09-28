@@ -498,7 +498,7 @@ def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_tim
     axes1.tick_params(axis='y', color='green', labelcolor='green', which='both')
     axes.set_xlabel('Frequency (Hz)')
     axes.set_ylabel('Pressure PSD (dbar²/Hz)')
-    axes.set_title(f'Spectral Area Matching; Channel: {channel}, Time: {target_time.strftime("%Y-%m-%d %H:%M:%S")}')
+    axes.set_title(f'Freq. Independent Spectral Area Matching; Channel: {channel}, Time: {target_time.strftime("%Y-%m-%d %H:%M:%S")}')
 
     lines = line1 + line2 + line3
     labels = [line.get_label() for line in lines]
@@ -812,7 +812,7 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     fig.suptitle('AWAC 300m vs 600m Bulk Wave Parameter Comparison')
 
     plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'awac_bulk_stats_comparison.png'), dpi=300) #TODO: no hard coded save paths
+    plt.savefig(os.path.join(save_dir, 'awac_bulk_stats_comparison.png'), dpi=300)
     plt.show()
     plt.close('all')
 
@@ -823,8 +823,21 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
     #average C(f) across all bursts - Frequency dependent calibration does not preserve DAS PSD shape for a single burst, it will make it equivalent to the model AWAC PSD
     #in order to make a calibration factor useful take the temporal median of C(t, x, f) across bursts
 
-    #open the calibration file to get C(x, f)
-    C_f = np.load(calibCoeff_path) #shape (n_channels, n_freqs)
+    day = target_time.day #get the day of the collect
+
+    if type(calibCoeff_path) == str:
+        #open the calibration file to get C(x, f) - temporal avg over entire dataset
+        C_f = np.load(calibCoeff_path) #shape (n_channels, n_freqs)
+
+    if type(calibCoeff_path) == list:
+        #find the matching file to day to get the temporal avg over that day of data
+        match = next(  #next works with the iterator (path for path in ...) to return the first value that satisfies the condition put forth
+            path for path in calibCoeff_path
+            if sequence_number(path) == day
+        )
+        C_f = np.load(match)
+
+
 
     orientation = get_orientation(channel)  # get the orientation of the selected DAS channel
 
@@ -953,13 +966,13 @@ def C_f_v_Time(model_data_dir, save_path, channel):
     plt.close('all')
 
 
-def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, save_path, channel, calibration='freq_independent'):
-    #compare the bulk wave statistics, Hs, Te, Thetap of both the model and the calibrated DAS for all timestamps
-
-    n_hours = len(das_data_paths)  # number of hours of data
-
-    for hour in tqdm(range(n_hours), colour='yellow'):
-        #pull the model and awac spectrum for each burst, allow for different types of calibration time averaging.
+# def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, save_path, channel, calibration='freq_independent'):
+#     #compare the bulk wave statistics, Hs, Te, Thetap of both the model and the calibrated DAS for all timestamps
+#
+#     n_hours = len(das_data_paths)  # number of hours of data
+#
+#     for hour in tqdm(range(n_hours), colour='yellow'):
+#         #pull the model and awac spectrum for each burst, allow for different types of calibration time averaging.
 
 
 
@@ -1033,11 +1046,11 @@ if __name__ == "__main__":
     # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
     '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST - FREQUENCY INDEPENDENT CALIBRATION'''
-    target_time = datetime(2026, 6, 14, 0, 0, 0) #target time to check spectra
+    target_time = datetime(2026, 6, 8, 20, 0, 0) #target time to check spectra
     model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
     das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     save_path = './figures/area_matching'
-    Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=800)
+    Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=950)
 
     '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
     # model_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
@@ -1056,12 +1069,14 @@ if __name__ == "__main__":
     # AWAC300_v_AWAC600(awac_data_dir, save_dir)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT - DAS V MODEL'''
-    target_time = datetime(2026, 6, 14, 0, 0, 0)  # target time to check spectra
+    target_time = datetime(2026, 6, 8, 20, 0, 0)  # target time to check spectra
     das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
     save_path = './figures/area_matching_freq_dependent'
-    avg_C_f_path = './data/frf_awac/avg_calibCoeff_freqDependent.npy'   #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
-    Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, avg_C_f_path, save_path, target_time, channel=800)
+    allAvg_C_f_path = './data/frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'  #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
+    dayAvg_C_f_paths = glob.glob('./data/frf_awac/freq_dependent_calib_coeff/*.npy')
+    filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
+    Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=950)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT OVER TIME'''
     # # average frequency dependent calibration coefficient over all data bursts
@@ -1070,10 +1085,10 @@ if __name__ == "__main__":
     # C_f_v_Time(model_dir, save_dir, channel=402)
 
     '''COMPUTE BULK WAVE STATISTICS AT A CHANNEL'''
-    model_data_dir = './data/frf/awac/calibration_coefficients_burst_600'
-    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    save_path = './figures'
-    Compare_Bulk_Wave_Stats(das_data_paths, model_data_dir, save_path, channel=402)
+    # model_data_dir = './data/frf/awac/calibration_coefficients_burst_600'
+    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    # save_path = './figures'
+    # Compare_Bulk_Wave_Stats(das_data_paths, model_data_dir, save_path, channel=402)
 
 
 
@@ -1083,8 +1098,6 @@ if __name__ == "__main__":
     #TODO: f - k plots of the DAS PSD one in the cross shore leg and one on the alongshore leg (need gradient in x to compute the wave number k)
 
     # TODO: compute bulk wave parameters from the calibrated DAS and the AWAC at the Boundary Condition
-
-    #TODO: compute frequency dependent calibration factor based on temporal averaging over one day. Not over the entire collect.
 
     #TODO: look at the Radar data.
 

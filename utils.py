@@ -29,6 +29,11 @@ def sequence_number(path):
     if match:
         return int(match.group(1)) #return the number as an integer
 
+    # search for a number anywhere in the filepath, return that
+    match = re.search(r'\d+', path)
+    if match:
+        return int(match.group(0)) #returns the first match in the group
+
     raise ValueError(f"Filename format not recognized: {filename}")
 
 
@@ -292,7 +297,41 @@ def average_C_f_over_all_bursts(data_dir, save_dir):
 
     np.save(os.path.join(save_dir, 'avg_calibCoeff_freqDependent.npy'), C_avg)  # save data
 
-def average_C_f_over
+def average_C_f_over_day(data_dir, save_dir):
+
+    #average C_f over one day
+    calib_data_paths = sorted(glob.glob(os.path.join(data_dir, '*.npz')), key=sequence_number) # list of all calibration coefficient files in the directory - sorted by time
+    c_day = [] #empty list for calibration coefficients
+    prev_day = None #placeholder day to track when day changes
+    for path in tqdm(calib_data_paths, colour='yellow'):
+
+        timestamp = sequence_number(path) #pull the timestamp from the file
+        day = timestamp.day  #pull the day that each timestamp corresponds to
+
+        if prev_day == None:
+            prev_day = day  #if the placeholder is None, populate it
+
+        data = np.load(path, allow_pickle=True)
+        data = data['arr_0'].item() #go through first header
+
+        c = data['calibration_coefficient_freq_dependent'] #calibration coefficient
+
+        if prev_day == day:
+            c_day.append(c) #if the placeholder == current day append to the list
+
+        elif prev_day != day:
+            c_day_stack = np.stack(c_day) #shape (n_bursts, n_channels, n_freqs)
+            C_avg = np.nanmedian(c_day_stack, axis=0) #take the temporal median of the frequency dependent calibration coefficients - should only be over one day.
+            np.save(os.path.join(save_dir, f'avg_calibCoeff_day_{prev_day}_freqDependent.npy'), C_avg) #save the data
+
+            c_day.clear() #clear the list for new data
+            prev_day = day #if the placeholder is set to another day, replace it
+
+    #save the final day
+    c_day_stack = np.stack(c_day)  # shape (n_bursts, n_channels, n_freqs)
+    C_avg = np.nanmedian(c_day_stack, axis=0)  # take the temporal median of the frequency dependent calibration coefficients - should only be over one day.
+    np.save(os.path.join(save_dir, f'avg_calibCoeff_day_{prev_day}_freqDependent.npy'), C_avg) #save the data
+
 
 
 def ncsp2FRF(p1, p2):
@@ -515,13 +554,13 @@ def build_DAS_XYZ_grid():
 
 
 if __name__ == "__main__":
-
+    #
     # #read_Json Files - DAS configuration and engineering chain
     # optical_setup = './documentation/FRF_Fiber1Mode8_Fiber2Mode10_1.6mGL_opticalSetUp.json'
     # engineering_chain = './documentation/ONYX-0564 Fiber 1__SimpleLinearAssetChainFiber1_V2_v50_engineeringChain.json'
     # raw_file = os.getcwd() + '/data/raw_66/1400_UTC/decimator_2026-06-06_13.55.01_UTC_011456.h5'
     # read_Json(optical_setup)
-    #
+    # #
     # #read attributes
     # with h5py.File(raw_file, 'r') as f:
     #     # First, print root attributes
@@ -530,7 +569,8 @@ if __name__ == "__main__":
     #     f.visititems(print_all_attributes)
 
     #average frequency dependent calibration coefficient over all data bursts
-    save_dir = './data/frf_awac'
+    save_dir = './data/frf_awac/freq_dependent_calib_coeff'
     data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    c_all = average_C_f_over_all_bursts(data_dir, save_dir)
+    # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
+    average_C_f_over_day(data_dir, save_dir)
 
