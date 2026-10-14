@@ -235,11 +235,19 @@ def compute_bulk_statistics(frequency_spectrum, direction_spectrum, frequency_bi
         raise ValueError("Frequency Spectrum must be 1D or 2D array. (N_time, N_freqs) or (N_freqs)")
 
     if frequency_band is not None:
-        Hs = 4 * np.sqrt(integrate_spectrum(frequency_spectrum, frequency_bins[frequency_band], axis=axis, integrate_over='frequency')) #significant wave height
+        Hs = 4 * np.sqrt(integrate_spectrum(frequency_spectrum[:, frequency_band], frequency_bins[frequency_band], axis=axis, integrate_over='frequency')) #significant wave height
     else:
         Hs = 4 * np.sqrt(integrate_spectrum(frequency_spectrum, frequency_bins, axis=axis, integrate_over='frequency')) #significant wave height
-    Tp = 1 / frequency_bins[np.argmax(frequency_spectrum, axis=axis)] #peak period bin
-    Thetap = direction_bins[np.argmax(direction_spectrum, axis=axis)] #peak direction bin
+
+    if direction_spectrum is not None:
+        Thetap = direction_bins[np.argmax(direction_spectrum, axis=axis)]  # peak direction bin
+    else:
+        Thetap = None
+
+    if frequency_spectrum is not None:
+         Tp = 1 / frequency_bins[np.argmax(frequency_spectrum, axis=axis)] #peak period bin
+    else:
+        Tp = None
 
     return Hs, Tp, Thetap
 
@@ -275,6 +283,33 @@ def integrate_spectrum(spectrum, bins, axis, integrate_over):
 
     if integrate_over not in ('frequency', 'direction'):
         raise ValueError(f"Invalid integrate_over: {integrate_over!r}. Choose 'frequency' or 'direction'.")
+
+def rebin_psd(f_src, S_src, f_tgt):
+    """Conservative rebin of a PSD onto target bins centered at f_tgt.
+    Bin edges are midpoints between target centers (outer edges extended by half a bin).
+    Returns the mean PSD over each target bin, so the area is conserved."""
+
+    # spacing between neighbouring target bin centers
+    d = np.diff(f_tgt)
+
+    # target bin edges: midpoints between neighbouring centers, with the first and last
+    # edge extended outward by half a bin so that every center has a lower and upper edge
+    # (len(edges) = len(f_tgt) + 1)
+    edges = np.concatenate(([f_tgt[0] - d[0] / 2],
+                            (f_tgt[:-1] + f_tgt[1:]) / 2,
+                            [f_tgt[-1] + d[-1] / 2]))
+
+    # cumulative integral of the source PSD (trapezoid), zero at f_src[0]
+    # F[i] = area under the source spectrum from f_src[0] up to f_src[i]
+    F = np.concatenate(([0.0], np.cumsum(0.5 * (S_src[1:] + S_src[:-1]) * np.diff(f_src))))
+
+    # evaluate the cumulative area at the target bin edges
+    # (interpolating the *integral*, not the spectrum, so partial source bins are weighted by overlap)
+    F_edges = np.interp(edges, f_src, F)
+
+    # area inside each target bin = difference of the cumulative area across its two edges;
+    # dividing by the bin width converts area back to a mean PSD value (units of the original PSD)
+    return np.diff(F_edges) / np.diff(edges)
 
 
 def average_C_f_over_all_bursts(data_dir, save_dir):
@@ -569,8 +604,8 @@ if __name__ == "__main__":
     #     f.visititems(print_all_attributes)
 
     #average frequency dependent calibration coefficient over all data bursts
-    save_dir = './data/frf_awac/freq_dependent_calib_coeff'
-    data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    save_dir = './data/frf_awac/freq_dependent_calib_coeff_weighted'
+    data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
     # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
     average_C_f_over_day(data_dir, save_dir)
 

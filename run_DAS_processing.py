@@ -23,7 +23,15 @@ if __name__ == '__main__':
     all_files = sorted(glob.glob(os.path.join(datafolder, '*.h5')), key=sequence_number) #create a list of all files
     indices = range(1, len(all_files) - 1)  #indices to loop through - skip first file to avoid edge effects
 
-    worker = partial(process_worker, all_files=all_files, savefolder=savefolder) #define a worker function for the multiprocessing
+    #DAS configuration parameters
+    gauge_length = 1.6 #meters
+    sampling_frequency = 500 #hertz
+    temporal_window = 10 #minutes
+
+    worker = partial(process_worker,
+                     all_files=all_files, savefolder=savefolder,
+                     gauge_length=gauge_length, sampling_frequency=sampling_frequency, temporal_window=temporal_window,
+                     downsample=False, cutoff_frequency=1, downsample_frequency=2, multi_save=True) #define a worker function for the multiprocessing
 
     with Pool(processes=6) as pool:  #loop through all the files and process with 'x' number of workers
         for msg in tqdm(pool.imap_unordered(worker, indices), total=len(indices), colour='yellow'):  #Processes the files in an unordered manner - can return 1, 3, 2

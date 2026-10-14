@@ -11,7 +11,8 @@ import glob
 from tqdm import tqdm
 from scipy.signal import welch, spectrogram
 from utils import clip_by_time, sequence_number, read_dasFile, time2dateTime, load_processedData, get_DAS_PSD_burst, \
-    get_orientation, strain2phase, get_burst_files, get_AWAC_data, smooth_spectrum, integrate_spectrum, compute_bulk_statistics
+    get_orientation, strain2phase, get_burst_files, get_AWAC_data, smooth_spectrum, integrate_spectrum, compute_bulk_statistics, \
+    rebin_psd
 from Calibration import wavenumber
 
 
@@ -435,16 +436,11 @@ def PSD_across_channels(file_paths, nperseg, noverlap, start_time:datetime, end_
         plt.close('all')
 
 
-def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time:datetime, channel:int, wave_band_min=0.05, wave_band_max=0.3):
+def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time:datetime, channel:int, wave_band_min=0.05, wave_band_max=0.3, sampling_frequency=2):
 
     orientation = get_orientation(channel) #get the orientation of the selected DAS channel
 
     burst_files = get_burst_files(das_data_paths, target_time, 35) #obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
-
-    das_freqs, das_PSD = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2) #compute the power spectral density over the burst using welch's method
-    das_wave_band = (das_freqs >= wave_band_min) & (das_freqs <= wave_band_max) #define the wave frequency band for the das
-    das_PSD = das_PSD[das_wave_band, :] #clip the power spectral density over the wave band
-    das_freqs = das_freqs[das_wave_band] #clip the frequency bins by the wave band
 
     # pull AWAC spectrum
     model_data_path = os.path.join(model_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz') #define awac data path
@@ -452,10 +448,20 @@ def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_tim
     model_data = model_data['arr_0'].item() #open the dictionary and get past the initial format
 
     C = model_data['calibration_coefficient'] #calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
-    model_Sf = model_data['awac_corrected_frequency_spectrum']#awac frequency spectrum
+    # model_Sf = model_data['awac_corrected_frequency_spectrum']#awac frequency spectrum
+    model_Sf = model_data['awac_cable_weighted_frequency_spectrum'] #awac frequency spectrum weighted by the incident wave direction - energy projected along the cable
     model_freqs = model_data['awac_frequency_bins'] #awac frequency bins
+    wave_band = (model_freqs >= wave_band_min) & (model_freqs <= wave_band_max)  # define the wave band, same as das but has different bin widths so needs a different variable.
+
     h = model_data['water_depth'] #water depth along the cable
     calibration_flag = model_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+    nperseg = round(sampling_frequency / np.diff(model_freqs)[0]) #assumes constant spacing of the model frequency bins, computes the nperseg such that PSD bins equal those of the model)
+
+    das_freqs, das_PSD_raw = get_DAS_PSD_burst(burst_files, nperseg=nperseg, sampling_frequency=sampling_frequency) #compute the power spectral density over the burst using welch's method
+    # rebin onto the full AWAC grid, then clip both with the same mask
+    das_PSD_m = rebin_psd(das_freqs, das_PSD_raw[:, channel], model_freqs)
+    das_PSD = das_PSD_m[wave_band] #clip the power spectral density over the wave band
 
     # define constants
     rho = 1025 #kg/m^3 density of seawater
@@ -466,20 +472,18 @@ def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_tim
     model_k = wavenumber(h_local, model_T)  # awac wavenumber at each period / frequency bin
     model_Kp = 1 / np.cosh(model_k * h_local)  # pressure response factor at each awac wavenumber
 
-    # integrate awac directional spectrum over directional bins
-    model_wave_band = (model_freqs >= 0.05) & (model_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
-    model_freqs = model_freqs[model_wave_band]  # constrain the awac frequencies over the wave band
-    model_Kp = model_Kp[model_wave_band] #constrain the awac pressure response factor over the wave band
+    model_freqs = model_freqs[wave_band]  # constrain the awac frequencies over the wave band
+    model_Kp = model_Kp[wave_band] #constrain the awac pressure response factor over the wave band
 
-    Seta_f_model = model_Sf[channel, model_wave_band].T
+    Seta_f_model = model_Sf[channel, wave_band].T
 
     # convert awac SSE spectrum to pressure spectrum.
     Sp_f_model = (Seta_f_model * (rho * g * model_Kp) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
     # correct DAS spectrum to convert from phase_shifts to pressure
-    Sp_f_das = (das_PSD[:, channel] * C[channel]) / 1e8 # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
+    Sp_f_das = (das_PSD * C[channel]) / 1e8 # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
 
     # integrate under the spectra - should yield essentially the same value if calibration was done correctly
-    Prms_das = np.sqrt(np.trapezoid(Sp_f_das, das_freqs))  #compute rms pressure value from the das pressure spectrum
+    Prms_das = np.sqrt(np.trapezoid(Sp_f_das, model_freqs))  #compute rms pressure value from the das pressure spectrum
     Prms_model = np.sqrt(np.trapezoid(Sp_f_model, model_freqs)) #compute rms pressure value from the awac pressure spectrum
 
     #print out metrics
@@ -491,9 +495,9 @@ def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_tim
     fig, axes = plt.subplots(1, 1, figsize=(12, 8))
 
     line1 = axes.plot(model_freqs, Sp_f_model, color='blue', label='Modeled Pressure PSD (AWAC)')
-    line2 = axes.plot(das_freqs, Sp_f_das, color='red', label='DAS Pressure PSD (Calibrated)')
+    line2 = axes.plot(model_freqs, Sp_f_das, color='red', label='DAS Pressure PSD (Calibrated)')
     axes1 = axes.twinx()
-    line3 = axes1.plot(das_freqs, das_PSD[:, channel], color='green', linestyle='--', label='DAS Phase Shift PSD')
+    line3 = axes1.plot(model_freqs, das_PSD, color='green', linestyle='--', label='DAS Phase Shift PSD')
     axes1.set_ylabel('Phase Shift PSD (Rad²/Hz)', color='green')
     axes1.tick_params(axis='y', color='green', labelcolor='green', which='both')
     axes.set_xlabel('Frequency (Hz)')
@@ -616,8 +620,15 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
     # integrate the directional spectrum over the frequency bins to get the 1D directional spectrum, shape (N_samples/time, n_dirs)
     S_t = integrate_spectrum(S_f_t[:, wave_band, :], freqs[wave_band], axis=1, integrate_over='frequency')
 
+    #compute HS before smoothing
+    awac_Hs_all, _, _ = compute_bulk_statistics(S_f, S_t, freqs, dirs, wave_band)
+
+    #smooth the AWAC spectra
+    S_t = smooth_spectrum(S_t, window=5, filter_type='gaussian', mode='wrap')
+    S_f = smooth_spectrum(S_f, window=5, filter_type='gaussian', mode='wrap')
+
     #bulk wave statistics of the observed awac data (N_samples/time,)
-    awac_Hs_all, awac_Tp_all, awac_thetap_all = compute_bulk_statistics(S_f, S_t, freqs, dirs, wave_band)
+    _, awac_Tp_all, awac_thetap_all = compute_bulk_statistics(S_f, S_t, freqs, dirs, wave_band)
 
     #initialize plot for visualization
     fig, axes = plt.subplots(1, 3, figsize=(15, 8))
@@ -640,7 +651,7 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
     fig.suptitle('Modeled vs Observed AWAC (300m xFRF) Bulk Wave Parameter Comparison')
 
     #error variables
-    Hrms_sumSquared_error = 0.0
+    Hs_sumSquared_error = 0.0
     Tp_sumSquared_error = 0.0
     thetap_sumSquared_error = 0.0
 
@@ -662,28 +673,31 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
         # integrate the directional spectrum over the frequency bins to get the 1D directional spectrum, shape (n_channels, n_dirs)
         model_S_t = integrate_spectrum(model_S_f_t[:, wave_band, :], bins=freqs[wave_band], axis=1, integrate_over='frequency')
 
-        model_S_t = smooth_spectrum(model_S_t, window=5, filter_type='gaussian', mode='wrap') #smooth the spectra
+        #compute Hs before smoothing
+        model_Hs_all, _, _ = compute_bulk_statistics(model_S_f, model_S_t, freqs, dirs, wave_band)
+
+        model_S_t = smooth_spectrum(model_S_t, window=5, filter_type='gaussian', mode='wrap') #smooth the DAS spectra
         model_S_f = smooth_spectrum(model_S_f, window=5, filter_type='gaussian', mode='wrap')
 
-        # #sanity check - plot the frequency/direction spectrum of the awac measurement and the model for the same time step
-        # fig = plt.figure()
-        # ax = fig.add_subplot(111)
-        # ax.plot(dirs, S_t[idx, :], color='blue', label='300m awac measurement')
-        # ax.plot(dirs, model_S_t[awac_300_channel, :], color='red', label='model eval at 300mAWAC')
-        # ax.legend()
-        # # plt.show()
-        # plt.savefig(f'./figures/modelvawac/direction/peakDir_{count}.png')
-        # plt.close()
-        # count+=1
+        #sanity check - plot the frequency/direction spectrum of the awac measurement and the model for the same time step
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.plot(dirs, S_t[idx, :], color='blue', label='300m awac measurement')
+        ax.plot(dirs, model_S_t[awac_300_channel, :], color='red', label='model eval at 300mAWAC')
+        ax.legend()
+        # plt.show()
+        plt.savefig(f'./figures/modelvawac/direction/peakDir_{count}.png')
+        plt.close()
+        count+=1
 
         # bulk wave statistics from the model shape: (n_channels,)
-        model_Hs_all, model_Tp_all, model_thetap_all = compute_bulk_statistics(model_S_f, model_S_t, freqs, dirs, frequency_band=wave_band)
+        _, model_Tp_all, model_thetap_all = compute_bulk_statistics(model_S_f, model_S_t, freqs, dirs, frequency_band=wave_band)
 
         #BULK STATISTICS
         awac_Hs = awac_Hs_all[idx] #300m awac Hs at the closest time to the model data
         model_Hs = model_Hs_all[awac_300_channel] #model Hs at the channel corresponding to the 300m awac
-        Hrms_error = awac_Hs - model_Hs
-        Hrms_sumSquared_error += Hrms_error ** 2
+        Hs_error = awac_Hs - model_Hs
+        Hs_sumSquared_error += Hs_error ** 2
         axes[0].scatter(awac_Hs, model_Hs, color='blue', alpha=0.5)
 
         awac_Tp = awac_Tp_all[idx] #300m awac Tp at the closest time to the model data
@@ -694,15 +708,15 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
 
         awac_thetap = awac_thetap_all[idx] #300m awac thetap at the closest time to the model data
         model_thetap = model_thetap_all[awac_300_channel] #model thetap at the channel corresponding to the 300m awac
-        thetap_error = awac_thetap - model_thetap
+        thetap_error = (awac_thetap - model_thetap + 180) % 360 - 180  #force range into -180 to 180 degrees to avoid issues with circularity
         thetap_sumSquared_error += thetap_error ** 2
         axes[2].scatter(awac_thetap, model_thetap, color='red', alpha=0.5)
 
     #calculate RMSE for each bulk statistic
-    Hrms_RMSE = np.sqrt(Hrms_sumSquared_error / n_hours)
+    Hs_RMSE = np.sqrt(Hs_sumSquared_error / n_hours)
     Tp_RMSE = np.sqrt(Tp_sumSquared_error / n_hours)
     thetap_RMSE = np.sqrt(thetap_sumSquared_error / n_hours)
-    axes[0].annotate(f'RMSE = {Hrms_RMSE:.2f} m', xy=(0.05, 0.9), xycoords='axes fraction', fontsize=12, color='blue')
+    axes[0].annotate(f'RMSE = {Hs_RMSE:.2f} m', xy=(0.05, 0.9), xycoords='axes fraction', fontsize=12, color='blue')
     axes[1].annotate(f'RMSE = {Tp_RMSE:.2f} s', xy=(0.05, 0.9), xycoords='axes fraction', fontsize=12, color='green')
     axes[2].annotate(f'RMSE = {thetap_RMSE:.2f} degrees', xy=(0.05, 0.9), xycoords='axes fraction', fontsize=12, color='red')
     plt.tight_layout()
@@ -737,12 +751,26 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     S300_f = integrate_spectrum(S300_f_t[:, wave_band, :], dirs300, axis=-1, integrate_over='direction') #1D frequency spectrum (n_samples, n_freqs)
     S300_t = integrate_spectrum(S300_f_t[:, wave_band, :], freqs300[wave_band], axis=1, integrate_over='frequency') #1D direction spectrum (n_samples, n_dirs)
 
+    #compute Hs before smoothing
+    Hs300_all, _, _ = compute_bulk_statistics(S300_f, S300_t, freqs300, dirs300, frequency_band=wave_band)
+
+    #smooth the AWAC spectra
+    S300_t = smooth_spectrum(S300_t, window=5, filter_type='gaussian', mode='wrap')
+    S300_f = smooth_spectrum(S300_f, window=5, filter_type='gaussian', mode='wrap')
+
     #bulk wave statistics of the observed 300m awac data, shape (N_samples/time,)
-    Hs300_all, Tp300_all, thetap300_all = compute_bulk_statistics(S300_f, S300_t, freqs300, dirs300, frequency_band=wave_band)
+    _, Tp300_all, thetap300_all = compute_bulk_statistics(S300_f, S300_t, freqs300, dirs300, frequency_band=wave_band)
 
     #Bulk Statistics for 600m AWAC
     S600_f = integrate_spectrum(S600_f_t[:, wave_band, :], dirs600, axis=-1, integrate_over='direction') #1D frequency spectrum (n_samples, n_freqs)
     S600_t = integrate_spectrum(S600_f_t[:, wave_band, :], freqs600[wave_band], axis=1, integrate_over='frequency') #1D direction spectrum (n_samples, n_dirs)
+
+    #Compute Hs before smoothing
+    Hs600_all, _, _ = compute_bulk_statistics(S600_f, S600_t, freqs600, dirs600, frequency_band=wave_band)
+
+    #smooth the AWAC spectra
+    S600_t = smooth_spectrum(S600_t, window=5, filter_type='gaussian', mode='wrap')
+    S600_f = smooth_spectrum(S600_f, window=5, filter_type='gaussian', mode='wrap')
 
     # #sanity plot - awac300 v awac 600 frequency spectrum
     # count = 0
@@ -759,7 +787,7 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     #     count+=1
 
     #bulk wave statistics of the observed 600m awac data, shape (N_samples/time,)
-    Hs600_all, Tp600_all, thetap600_all = compute_bulk_statistics(S600_f, S600_t, freqs600, dirs600, frequency_band=wave_band)
+    _, Tp600_all, thetap600_all = compute_bulk_statistics(S600_f, S600_t, freqs600, dirs600, frequency_band=wave_band)
 
     #define a time mask to clip the full arrays
     time_mask300 = (time300 >= start_time) & (time300 <= end_time)
@@ -784,7 +812,8 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     #compute error statistics
     Hs_RMSE = np.sqrt(np.nanmean((Hs300 - Hs600) ** 2))
     Tp_RMSE = np.sqrt(np.nanmean((Tp300 - Tp600) ** 2))
-    thetap_RMSE = np.sqrt(np.nanmean((thetap300 - thetap600) ** 2))
+    thetap_error = (thetap300 - thetap600 + 180) % 360 - 180
+    thetap_RMSE = np.sqrt(np.nanmean(thetap_error ** 2))  #avoid circularity issues by wrapping the error to [-180, 180]
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 8))
 
@@ -817,7 +846,7 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     plt.close('all')
 
 
-def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibCoeff_path, save_path, target_time, channel, wave_band_min=0.05, wave_band_max=0.3):
+def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibCoeff_path, save_path, target_time, channel, wave_band_min=0.05, wave_band_max=0.3, sampling_frequency=2):
     #compare the calibrated DAS PSD with the frequency dependent calibration factor to the modeled AWAC PSD
 
     #average C(f) across all bursts - Frequency dependent calibration does not preserve DAS PSD shape for a single burst, it will make it equivalent to the model AWAC PSD
@@ -837,26 +866,29 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
         )
         C_f = np.load(match)
 
-
-
     orientation = get_orientation(channel)  # get the orientation of the selected DAS channel
-
-    burst_files = get_burst_files(das_data_paths, target_time, 35)  # obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
-
-    das_freqs, das_PSD = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2)  # compute the power spectral density over the burst using welch's method
-    das_wave_band = (das_freqs >= wave_band_min) & (das_freqs <= wave_band_max)  # define the wave frequency band for the das
-    das_PSD = das_PSD[das_wave_band, :]  # clip the power spectral density over the wave band
-    das_freqs = das_freqs[das_wave_band]  # clip the frequency bins by the wave band
 
     # pull Modeled AWAC spectrum
     model_data_path = os.path.join(model_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
     model_data = np.load(model_data_path, allow_pickle=True)  # read the data
     model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
 
-    model_Sf = model_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
+    # model_Sf = model_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
+    model_Sf = model_data['awac_cable_weighted_frequency_spectrum'] #awac frequency spectrum weighted by the incident wave direction - energy projected along the cable
     model_freqs = model_data['awac_frequency_bins']  # awac frequency bins
+    wave_band = (model_freqs >= wave_band_min) & (model_freqs <= wave_band_max)  # define the wave band, same as das but has different bin widths so needs a different variable.
+
     h = model_data['water_depth']  # water depth along the cable
     calibration_flag = model_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+    burst_files = get_burst_files(das_data_paths, target_time, 35)  # obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
+
+    nperseg = round(sampling_frequency / np.diff(model_freqs)[0]) #assumes constant spacing of the model frequency bins, computes the nperseg such that PSD bins equal those of the model
+
+    das_freqs, das_PSD_raw = get_DAS_PSD_burst(burst_files, nperseg=nperseg, sampling_frequency=sampling_frequency)  # compute the power spectral density over the burst using welch's method
+    # rebin onto the full AWAC grid, then clip both with the same mask
+    das_PSD_m = rebin_psd(das_freqs, das_PSD_raw[:, channel], model_freqs)
+    das_PSD = das_PSD_m[wave_band]  # clip the power spectral density over the wave band
 
     # define constants
     rho = 1025  # kg/m^3 density of seawater
@@ -867,18 +899,15 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
     model_k = wavenumber(h_local, model_T)  # awac wavenumber at each period / frequency bin
     model_Kp = 1 / np.cosh(model_k * h_local)  # pressure response factor at each awac wavenumber
 
-    # integrate awac directional spectrum over directional bins
-    model_wave_band = (model_freqs >= 0.05) & (model_freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
-    model_freqs = model_freqs[model_wave_band]  # constrain the awac frequencies over the wave band
-    model_Kp = model_Kp[model_wave_band]  # constrain the awac pressure response factor over the wave band
+    model_freqs = model_freqs[wave_band]  # constrain the awac frequencies over the wave band
+    model_Kp = model_Kp[wave_band]  # constrain the awac pressure response factor over the wave band
 
-    Seta_f_model = model_Sf[channel, model_wave_band].T
+    Seta_f_model = model_Sf[channel, wave_band].T
 
     # convert awac SSE spectrum to pressure spectrum.
     Sp_f_model = (Seta_f_model * (rho * g * model_Kp) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
     # correct DAS spectrum to convert from phase_shifts to pressure
-    das_PSD_on_awac_grid = np.interp(model_freqs, das_freqs, das_PSD[:, channel]) #interpolate the das PSD onto the model freqs grid - minor adjustment to make broadcasting work for the multiplication with C(f)
-    Sp_f_das = (das_PSD_on_awac_grid * C_f[channel, :]) / 1e8  # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
+    Sp_f_das = (das_PSD * C_f[channel, :]) / 1e8  # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
 
     # integrate under the spectra - should yield essentially the same value if calibration was done correctly
     Prms_das = np.sqrt(np.trapezoid(Sp_f_das, model_freqs))  # compute rms pressure value from the das pressure spectrum
@@ -895,7 +924,7 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
     line1 = axes.plot(model_freqs, Sp_f_model, color='blue', label='Modeled Pressure PSD (AWAC)')
     line2 = axes.plot(model_freqs, Sp_f_das, color='red', label='DAS Pressure PSD (Calibrated)')
     axes1 = axes.twinx() #secondary y axis
-    line3 = axes1.plot(model_freqs, das_PSD_on_awac_grid, color='green',  linestyle='--', label='DAS Phase Shift PSD')
+    line3 = axes1.plot(model_freqs, das_PSD, color='green',  linestyle='--', label='DAS Phase Shift PSD')
     axes1.set_ylabel('Phase Shift PSD (Rad²/Hz)', color='green')
     axes1.tick_params(axis='y', color='green', labelcolor='green', which='both')
     axes.set_xlabel('Frequency (Hz)')
@@ -966,13 +995,146 @@ def C_f_v_Time(model_data_dir, save_path, channel):
     plt.close('all')
 
 
-# def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, save_path, channel, calibration='freq_independent'):
-#     #compare the bulk wave statistics, Hs, Te, Thetap of both the model and the calibrated DAS for all timestamps
-#
-#     n_hours = len(das_data_paths)  # number of hours of data
-#
-#     for hour in tqdm(range(n_hours), colour='yellow'):
-#         #pull the model and awac spectrum for each burst, allow for different types of calibration time averaging.
+def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, calibCoeff_path, save_path, channel, calibration='freq_independent', wave_band_min=0.05, wave_band_max=0.3, sampling_frequency=2):
+    #compare the bulk wave statistics, Hs, Te, Thetap of both the model and the calibrated DAS for all timestamps
+    assert calibration in ['freq_independent', 'freq_dependent'], "Calibration must be either 'freq_independent' or 'freq_dependent'"
+
+    model_data_paths = sorted(glob.glob(os.path.join(model_data_dir, '*.npz')), key=sequence_number)
+    n_hours = len(model_data_paths) # number of hours of data - one hour per burst (burst is the first 35 minutes of DAS data in each hour)
+
+    timestamps = []
+    Hs_das_values = []
+    Hs_awac_values = []
+    Te_das_values = []
+    Te_awac_values = []
+    Hs_error = 0.0
+    Te_error = 0.0
+
+    #preset plot setup
+    fig, axes = plt.subplots(2, 1, figsize=(15, 8))
+    fig.suptitle(f'Bulk Wave Statistics Comparison; Channel: {channel}_{calibration}', fontweight='bold', fontsize=16)
+    axes[1].set_xlabel('Time (UTC)')
+    axes[0].set_ylabel('Significant Wave Height (m)')
+    axes[1].set_ylabel('Energy Weighted Period, Te (s)')
+
+    for hour in tqdm(range(n_hours), colour='yellow'):
+        #pull the model and awac spectrum for each burst, allow for different types of calibration time averaging.
+        timestamp = sequence_number(model_data_paths[hour])  # get the day of the burst\
+        day = timestamp.day
+
+        if calibration == 'freq_dependent':
+
+            if type(calibCoeff_path) == str:
+                # open the calibration file to get C(x, f) - temporal avg over entire dataset
+                C = np.load(calibCoeff_path)  # shape (n_channels, n_freqs)
+
+            if type(calibCoeff_path) == list:
+                # find the matching file to day to get the temporal avg over that day of data
+                match = next(  # next works with the iterator (path for path in ...) to return the first value that satisfies the condition put forth
+                    path for path in calibCoeff_path
+                    if sequence_number(path) == day
+                )
+                C = np.load(match)
+
+        orientation = get_orientation(channel)  # get the orientation of the selected DAS channel
+
+        # pull Modeled AWAC spectrum
+        model_data_path = os.path.join(model_data_dir, f'Calib_{timestamp.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
+        model_data = np.load(model_data_path, allow_pickle=True)  # read the data
+        model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
+
+        model_Sf_full = model_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
+        model_Sf = model_data['awac_cable_weighted_frequency_spectrum']  # awac frequency spectrum weighted by the incident wave direction - energy projected along the cable
+
+        model_freqs = model_data['awac_frequency_bins']  # awac frequency bins
+        wave_band = (model_freqs >= wave_band_min) & (model_freqs <= wave_band_max)  # define the wave band, this will lose some information for bulk statistics but is ok as it is applied to all
+
+        if calibration == 'freq_independent':
+            C = model_data['calibration_coefficient'] # pull the frequency independent calibration coefficient from the model data
+
+        h = model_data['water_depth']  # water depth along the cable
+        calibration_flag = model_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
+
+        burst_files = get_burst_files(das_data_paths, timestamp, 35)  # obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
+
+        nperseg = round(sampling_frequency / np.diff(model_freqs)[0])  # assumes constant spacing of the model frequency bins, computes the nperseg such that PSD bins equal those of the model
+
+        das_freqs, das_PSD_raw = get_DAS_PSD_burst(burst_files, nperseg=nperseg, sampling_frequency=sampling_frequency)  # compute the power spectral density over the burst using welch's method
+        # rebin onto the full AWAC grid, then clip both with the same mask
+        das_PSD_m = rebin_psd(das_freqs, das_PSD_raw[:, channel], model_freqs)
+        das_PSD = das_PSD_m[wave_band]  # clip the power spectral density over the wave band
+
+        # define constants
+        rho = 1025  # kg/m^3 density of seawater
+        g = 9.81  # m/s^2 gravitational acceleration
+        h_local = h[channel]  # water depth at chosen DAS channel
+
+        model_T = 1 / model_freqs  # convert awac frequency bins to period
+        model_k = wavenumber(h_local, model_T)  # awac wavenumber at each period / frequency bin
+        model_Kp = 1 / np.cosh(model_k * h_local)  # pressure response factor at each awac wavenumber
+
+        model_freqs = model_freqs[wave_band]  # constrain the awac frequencies over the wave band
+        model_Kp = model_Kp[wave_band]  # constrain the awac pressure response factor over the wave band
+
+        Seta_f_model = model_Sf[channel, wave_band].T #weighted frequency spectrum
+        Seta_f_awac_full = model_Sf_full[channel, wave_band].T #full unweighted spectrum
+        # get the directional weighting of the spectrum along the cable, this is the ratio of the weighted frequency spectrum to the full spectrum - exact same for the DAS and AWAC. (n_freqs)
+        D_eff = Seta_f_model / Seta_f_awac_full
+
+        # correct DAS spectrum to convert from phase_shifts to pressure
+        Sp_f_das = (das_PSD * C[channel])   # the calibration coefficient is for a pressure spectra
+        Seta_f_das_weighted = Sp_f_das / ((rho * g * model_Kp) ** 2)  # convert to surface elevation spectrum using the pressure response factor - directionally weighted
+        Seta_f_das_full = Seta_f_das_weighted / D_eff  # recover the full spectrum by dividing by the directional weight of the spectrum along the cable
+
+        #compute significant wave height for both the DAS and AWAC, don't need frequency band because it is already masked
+        Hs_das, _, _ = compute_bulk_statistics(Seta_f_das_full, None, model_freqs, None, None) #significant wave height derived from das spectrum
+        Hs_awac, _, _ = compute_bulk_statistics(Seta_f_awac_full, None, model_freqs, None, None) #significant wave height derived from awac spectrum
+
+        #energy weighted period calculation
+        df = np.diff(model_freqs)[0]
+        m0_das = np.nansum(Seta_f_das_full) * df #0th moment
+        m1_das = np.nansum(Seta_f_das_full * model_freqs) * df
+        f_e_das = m1_das / m0_das
+        Te_das = 1 / f_e_das
+
+        m0_awac = np.nansum(Seta_f_awac_full) * df #0th moment
+        m1_awac = np.nansum(Seta_f_awac_full * model_freqs) * df
+        f_e_awac= m1_awac / m0_awac
+        Te_awac = 1 / f_e_awac
+
+        timestamps.append(timestamp)
+        Hs_das_values.append(Hs_das)
+        Hs_awac_values.append(Hs_awac)
+        Te_das_values.append(Te_das)
+        Te_awac_values.append(Te_awac)
+
+        Hs_error += (Hs_awac - Hs_das) ** 2
+        Te_error += (Te_awac - Te_das) ** 2
+
+    Hs_rmse = np.sqrt(Hs_error / len(timestamps))
+    Te_rmse = np.sqrt(Te_error / len(timestamps))
+
+    #add information to the plots
+    axes[0].plot(timestamps, Hs_das_values, 'o-', color='blue', label='DAS Hs')
+    axes[0].plot(timestamps, Hs_awac_values, 'o-', color='orange', label='AWAC Hs')
+
+    axes[1].plot(timestamps, Te_das_values, 'o-', color='blue', label='DAS Te')
+    axes[1].plot(timestamps, Te_awac_values, 'o-', color='orange', label='AWAC Te')
+
+    axes[0].legend()
+    axes[0].grid(True)
+    axes[1].legend()
+    axes[1].grid(True)
+
+    axes[0].set_title(f'Significant Wave Height (Hs), RMSE={Hs_rmse:.2f} m')
+    axes[1].set_title(f'Energy Weighted Period (Te), RMSE={Te_rmse:.2f} s')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_path, f'wave_stats_Channel_{channel}_{calibration}.png'))
+    plt.show()
+    plt.close('all')
+
+
 
 
 
@@ -1046,11 +1208,11 @@ if __name__ == "__main__":
     # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
     '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST - FREQUENCY INDEPENDENT CALIBRATION'''
-    target_time = datetime(2026, 6, 8, 20, 0, 0) #target time to check spectra
-    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    save_path = './figures/area_matching'
-    Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=950)
+    # target_time = datetime(2026, 6, 2, 22, 0, 0) #target time to check spectra
+    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
+    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    # save_path = './figures/area_matching'
+    # Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=402)
 
     '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
     # model_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
@@ -1069,14 +1231,14 @@ if __name__ == "__main__":
     # AWAC300_v_AWAC600(awac_data_dir, save_dir)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT - DAS V MODEL'''
-    target_time = datetime(2026, 6, 8, 20, 0, 0)  # target time to check spectra
-    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    save_path = './figures/area_matching_freq_dependent'
-    allAvg_C_f_path = './data/frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'  #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
-    dayAvg_C_f_paths = glob.glob('./data/frf_awac/freq_dependent_calib_coeff/*.npy')
-    filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
-    Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=950)
+    # target_time = datetime(2026, 6, 2, 22, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
+    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
+    # save_path = './figures/area_matching_freq_dependent'
+    # # allAvg_C_f_path = './data/frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'   #entire dataset averaged c(f)
+    # dayAvg_C_f_paths = glob.glob('./data/frf_awac/freq_dependent_calib_coeff_weighted/*.npy')  #day averaged c(f)
+    # filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
+    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=402)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT OVER TIME'''
     # # average frequency dependent calibration coefficient over all data bursts
@@ -1085,21 +1247,33 @@ if __name__ == "__main__":
     # C_f_v_Time(model_dir, save_dir, channel=402)
 
     '''COMPUTE BULK WAVE STATISTICS AT A CHANNEL'''
-    # model_data_dir = './data/frf/awac/calibration_coefficients_burst_600'
-    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    # save_path = './figures'
-    # Compare_Bulk_Wave_Stats(das_data_paths, model_data_dir, save_path, channel=402)
+    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
+    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    dayAvg_C_f_paths = glob.glob('./data/frf_awac/freq_dependent_calib_coeff_weighted/*.npy')  # day averaged c(f)
+    filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  # remove files without a number in the path
+    save_path = './figures/wave_information'
+    Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_dependent')
 
 
 
 
     #TODO:Finally do the wave direction stuff
 
-    #TODO: f - k plots of the DAS PSD one in the cross shore leg and one on the alongshore leg (need gradient in x to compute the wave number k)
+    #TODO: f - k plots of the DAS PSD one in the cross shore leg and one on the alongshore leg (need gradient in x to compute the wave number k) - This will distort under oblique waves
 
-    # TODO: compute bulk wave parameters from the calibrated DAS and the AWAC at the Boundary Condition
+    #TODO: look at residual spectrum - compute rmse.  function for compute residual - allow for either one x in t or one t in x.
 
-    #TODO: look at the Radar data.
+    #TODO: look at spectrograms of the DAS data and the AWAC data over the entire dataset - plus directional spectra and directional spread
+
+    #TODO: would ast v puv computation of awac/model directional spectrum matter?
 
     #TODO: make a run frf DAS Plots script at the end of this
+
+    #TODO:check to make sure wave refraction is working - do this while checking with marcelas code - coarseness of the direction binning may affect the refraction - things may be shore normal but be marked in a bin a few degrees off.
+
+    #TODO: change the name of where the model data resides to calibration_data - not calib coefficients
+
+    #TODO: add a script/class that holds all data constants with an @dataclass decorator
+
+
 

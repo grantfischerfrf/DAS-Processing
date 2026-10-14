@@ -43,7 +43,7 @@ if __name__ == "__main__":
     '''BURST'''
     all_files = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
 
-    save_folder = './data/frf_awac/calibration_coefficients_burst_600'
+    save_folder = './data/frf_awac/calibration_coefficients_burst_600_weighted'
     DAS_XYZ_path = './data/frf_awac/channel_grid.pkl'
     AWAC1_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
 
@@ -83,7 +83,8 @@ if __name__ == "__main__":
                      save_folder=save_folder,
                      DAS_XYZ_path=DAS_XYZ_path,
                      AWAC1_path=AWAC1_path,
-                     gamma_break=0.43) #breaker index
+                     gamma_break=0.43,  #breaker index
+                     sampling_frequency=2)
 
     print('Calculating Calibration Coefficients ...')
     with Pool(processes=n_workers) as pool:

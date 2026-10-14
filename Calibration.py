@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import xarray as xr
 import re
-from utils import load_processedData, get_DAS_PSD, get_DAS_PSD_burst, strain2phase, get_AWAC_data
+from utils import load_processedData, get_DAS_PSD, get_DAS_PSD_burst, strain2phase, get_AWAC_data, rebin_psd
 from scipy.signal import welch
 from tqdm import tqdm
 
@@ -20,13 +20,13 @@ def wavenumber(h, T, tol=1e-6, max_iter=50):
 
     g = 9.81
     T = np.atleast_1d(T).astype(float)
-    omega = 2 * np.pi / T
-    k = omega**2 / g  # deep-water guess as starting point
+    sigma = 2 * np.pi / T
+    k = sigma**2 / g  # deep-water guess as starting point
 
     for _ in range(max_iter):
         kh = k * h  # dimensionless relative depth (wavenumber x depth)
         tanh_kh = np.tanh(kh)  # tanh(kh)
-        f = g * k * tanh_kh - omega ** 2  # residual: f(k) = g*k*tanh(kh) - omega^2, should be zero at the true root
+        f = g * k * tanh_kh - sigma ** 2  # residual: f(k) = g*k*tanh(kh) - omega^2, should be zero at the true root
         fp = g * tanh_kh + g * kh * (1 - tanh_kh ** 2)  # f'(k): derivative of f w.r.t. k (product rule + chain rule on tanh(kh))
         dk = f / fp  # Newton-Raphson step size: dk = f(k) / f'(k)
         k -= dk  # update k toward the root: k_new = k_old - dk
@@ -180,15 +180,10 @@ def compute_calibration_coefficient(files_to_process,
 
         for ch in range(N_channels):
 
-            # skip the first ~100 channels of the DAS cable, there is no signal there  #TODO: May need to do this to keep the calibration factor valid.
-            # if ch < 120 or ch > N_channels - 120:
-            #     continue
-
             pressure_spectrum = np.zeros(len(awac_freqs)) #empty array to hold pressure spectrum
 
             # pull the DAS PSD at the current channel and time step
             das_PSD = das_PSD_all_channels[:, ch]
-            # TODO: probably will need to average the PSD for the 35 minute burst.
 
             h1 = surfaceElevation - bed[ch] #depth at each point - corrected for tides?
 
@@ -198,7 +193,7 @@ def compute_calibration_coefficient(files_to_process,
                 calibration_flag[ch] = 0
                 continue
 
-            water_depth[ch] = h1 #append the water_depth for each channel #TODO: make sure this is correct - want to correct for tides but not resolving individual waves for h.
+            water_depth[ch] = h1 #append the water_depth for each channel
 
             valid_channels += 1  # add a count for each channel that is allowed to pass through
 
@@ -377,7 +372,7 @@ def process_worker(files_to_process, save_folder, DAS_XYZ_path, AWAC1_path, AWAC
 def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid,
                                            S_f_theta_eta, awac_freqs, dirs, p_time,
                                            dtheta, df, T, gaugeDepth, gaugeElevation,
-                                           bottomElevation, gamma_break):
+                                           bottomElevation, gamma_break, sampling_frequency):
 
     rho = 1025
     g = 9.81
@@ -395,9 +390,13 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
     theta0_deg = dirs - 71.8535  # convert measure wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore
     theta0_deg = (theta0_deg + 180) % 360 - 180  # wrap to -180, 180. #waves propagating in opposite direction of positive x axis
 
-    theta0_rad = np.deg2rad(theta0_deg)  # convert to radians
+    theta0_rad = np.deg2rad(theta0_deg)  # convert to radians: shape of (dirs,)
     cos_theta0 = np.cos(theta0_rad)  # precomputation of cos(theta0)
     sin_theta0 = np.sin(theta0_rad)  # precomputation of sin(theta0)
+
+    n_dir = 2 #direction exponent  #TODO: is 2 the correct exponent here? -> initial first guess because energy scales as trig_function^2(theta)
+    D_cross = np.abs(np.cos(theta0_rad)) ** n_dir  # cross-shore cable: along-axis waves respond most
+    D_along = np.abs(np.sin(theta0_rad)) ** n_dir  # alongshore cable: shore-normal is perpendicular to the axis
 
     Channel_Numbers = np.array(range(N_channels)) + 1
 
@@ -405,10 +404,17 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
     # and validated as complete bursts before this function is ever called
     for b_start, burst_files in tqdm(burst_chunk, colour='yellow'):
 
+        def directional_weight(ch):  #helper function for directional weighting
+            # same channel logic as your cross-shore / alongshore branches
+            if (ch < alongshore_channel_start) or (ch > alongshore_channel_end):
+                return D_cross
+            return D_along
+
         das_start_time = np.datetime64(b_start)
 
         # burst-level PSD: concatenate raw data across all files in this burst, Welch once
-        das_freqs, das_PSD_all_channels = get_DAS_PSD_burst(burst_files, nperseg=256, sampling_frequency=2)
+        nperseg = round(sampling_frequency / np.diff(awac_freqs)[0]) #assumes constant spacing of the model frequency bins, computes the nperseg such that PSD bins equal those of the model
+        das_freqs, das_PSD_all_channels = get_DAS_PSD_burst(burst_files, nperseg=nperseg, sampling_frequency=sampling_frequency)
 
         idx = np.argmin(np.abs(p_time - das_start_time))
         awac_start_time = p_time[idx]
@@ -440,6 +446,10 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
         S1_directional_spectrum = np.full((N_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32)
         S1_integrated_spectrum = np.full((N_channels, len(awac_freqs)), np.nan, dtype=np.float32)
 
+        #direction weighted spectrum
+        S1_eff_spectrum = np.full((N_channels, len(awac_freqs)), np.nan, dtype=np.float32)
+        D_eff = np.full(N_channels, np.nan, dtype=np.float32)
+
         S_corner = None #spectrum for the corner of the cross and alongshore channels
         k_corner = None
         h1_corner = None
@@ -451,7 +461,9 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             # pressure_spectrum = np.zeros(len(awac_freqs), dtype=np.float32)  # empty array to hold pressure spectrum - if desired
 
             # pull the DAS PSD at the current channel and time step
-            das_PSD = das_PSD_all_channels[:, ch]
+            das_PSD_raw = das_PSD_all_channels[:, ch]
+            # rebin onto the full AWAC grid, then clip both with the same mask
+            das_PSD = rebin_psd(das_freqs, das_PSD_raw, awac_freqs)
 
             if ch == awac_channel:  #if the channel is the awac channel location
                 S1_local = S_f_theta_eta_selected.copy() #take the direction spectrum measured by the awac
@@ -465,13 +477,23 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
                 # compute calibration coefficient at the AWAC location using the unshoaled spectrum
                 Kp = 1 / np.cosh(k0 * h0)  # pressure response factor at the AWAC depth (z = -h0)
-                pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2  # convert surface elevation spectrum -> pressure spectrum
+                D = directional_weight(ch)  # get the directional weight for this channel, shape : (n_dirs)
+                S1_eff = np.nansum(S1_local * D[None, :], axis=1) * dtheta  # compute the effective spectrum by integrating over direction with the directional weight, shape : (n_freqs)
+                pressure_spectrum = S1_eff * ((rho * g * Kp) ** 2)  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory, shape : (n_freqs)
+                # pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2  # convert surface elevation spectrum -> pressure spectrum
 
-                das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)
-                das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band])
+                #allocate the effective spectrum and effective depth for later saving
+                S1_eff_spectrum[ch, :] = S1_eff
+                D_eff[ch] = np.nansum(S1_local * D[None, :]) / np.nansum(S1_local)
+
+                das_psd_variance = np.trapezoid(das_PSD[awac_wave_band], awac_freqs[awac_wave_band])
                 awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band])
 
-                if das_psd_variance <= 0:
+                # if (not np.isfinite(das_psd_variance)) or das_psd_variance <= 0:
+                #     calibration_flag[ch] = 0
+                #     continue
+                awac_ok = np.isfinite(awac_psd_variance) and awac_psd_variance > 0
+                if (not np.isfinite(das_psd_variance)) or das_psd_variance <= 0 or not awac_ok:
                     calibration_flag[ch] = 0
                     continue
 
@@ -479,8 +501,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
                 C[ch] = awac_psd_variance / das_psd_variance
 
                 # frequency dependent calibration
-                das_PSD_on_awac_grid = np.interp(awac_freqs, das_freqs, das_PSD)
-                C_f[ch, :] = pressure_spectrum[awac_wave_band] / das_PSD_on_awac_grid[awac_wave_band]
+                C_f[ch, :] = pressure_spectrum[awac_wave_band] / das_PSD[awac_wave_band]
 
                 continue
 
@@ -498,7 +519,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
             valid_channels += 1  # add a count for each channel that is allowed to pass through
 
-            S1_local = np.zeros((len(awac_freqs), len(dirs)), dtype=np.float32) #empty array to hold to 2D wave spectrum
+            S1_local = np.zeros((len(awac_freqs), len(dirs)), dtype=np.float32) #empty array to hold to 2D wave spectrum at each channel
             S1_integrated = np.zeros((len(awac_freqs)),  dtype=np.float32) #empty array to hold the 1D wave spectrum
 
             # S0_integrated_plot = np.zeros(len(awa c_freqs)) #DEBUG ONLY
@@ -666,17 +687,26 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             # convert surface elevation spectrum to pressure spectrum using linear wave theory
             Kp = 1 / np.cosh(k1_arr * h1) # compute the pressure response factor, assume we are trying to simulate pressure at the seabed z=-h
 
-            pressure_spectrum = S1_integrated * (rho * g * Kp) ** 2 # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory, shape : (n_freqs)
+            D = directional_weight(ch) # get the directional weight for this channel, shape : (n_dirs)
+            S1_eff = np.nansum(S1_local * D[None, :], axis=1) * dtheta # compute the effective spectrum by integrating over direction with the directional weight, shape : (n_freqs)
+            pressure_spectrum = S1_eff * ((rho * g * Kp) ** 2) # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory, shape : (n_freqs)
+            # pressure_spectrum = S1_integrated * ((rho * g * Kp) ** 2) # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory, shape : (n_freqs)
+
+            # allocate the effective spectrum and effective depth for later saving
+            S1_eff_spectrum[ch, :] = S1_eff
+            D_eff[ch] = np.nansum(S1_local * D[None, :]) / np.nansum(S1_local)
 
             # compute the calibration coefficient at each channel
-            # first integrate both the DAS PSD and AWAC PSD over the desired wave band
-            das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)  # wave band defined over the das PSD frequency bins
-
-            das_psd_variance = np.trapezoid(das_PSD[das_wave_band], das_freqs[das_wave_band])  # integrated power spectral density of the DAS
+            das_psd_variance = np.trapezoid(das_PSD[awac_wave_band], awac_freqs[awac_wave_band])  # integrated power spectral density of the DAS
 
             awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band])  # integrated power spectral density of the AWAC
 
-            if das_psd_variance <= 0:  # if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
+            # if (not np.isfinite(das_psd_variance)) or das_psd_variance <= 0:  # if the DAS PSD is zero or negative, huge or erroneous calibration coefficients will be computed.
+            #     calibration_flag[ch] = 0
+            #     continue
+
+            awac_ok = np.isfinite(awac_psd_variance) and awac_psd_variance > 0
+            if (not np.isfinite(das_psd_variance)) or das_psd_variance <= 0 or not awac_ok:
                 calibration_flag[ch] = 0
                 continue
 
@@ -685,9 +715,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             C[ch] = calibration_coefficient  # store the coefficient for this time and channel
 
             #frequency dependent calibration
-            # interpolate the DAS PSD onto the AWAC frequency grid, original DAS PSD is on a different frequency grid with a small mismatch
-            das_PSD_on_awac_grid = np.interp(awac_freqs, das_freqs, das_PSD)  #FIXME: interpolation could possible introduce minor error
-            calib_coeff_freq_dependent = pressure_spectrum[awac_wave_band] / das_PSD_on_awac_grid[awac_wave_band] # compute the frequency-dependent calibration coefficient as the ratio of the AWAC pressure spectrum over the DAS PSD
+            calib_coeff_freq_dependent = pressure_spectrum[awac_wave_band] / das_PSD[awac_wave_band] # compute the frequency-dependent calibration coefficient as the ratio of the AWAC pressure spectrum over the DAS PSD
             C_f[ch, :] = calib_coeff_freq_dependent #store the frequency-dependent calibration coefficient for this time and channel, vectorized for all frequencies
 
             # # SANITY CHECK
@@ -704,6 +732,8 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
             "calibration_coefficient_freq_dependent": C_f,
             "awac_corrected_directional_spectrum": S1_directional_spectrum,
             "awac_corrected_frequency_spectrum": S1_integrated_spectrum,
+            "awac_cable_weighted_frequency_spectrum": S1_eff_spectrum,
+            "directional_weight_effective": D_eff,
             'awac_frequency_bins': awac_freqs,
             'awac_directional_bins': dirs,
             "channel_number": Channel_Numbers,
@@ -726,7 +756,7 @@ def compute_calibration_coefficient_burst(burst_chunk, save_folder, channel_grid
 
 
 
-def process_worker_burst(burst_chunk, save_folder, DAS_XYZ_path, AWAC1_path, AWAC2_path=None, gamma_break=0.43):
+def process_worker_burst(burst_chunk, save_folder, DAS_XYZ_path, AWAC1_path, AWAC2_path=None, gamma_break=0.43, sampling_frequency=2):
     '''
         Args:
             burst_chunk: list of (burst_start, file_list)
@@ -756,14 +786,11 @@ def process_worker_burst(burst_chunk, save_folder, DAS_XYZ_path, AWAC1_path, AWA
         gaugeElevation=gaugeElevation,
         bottomElevation=bottomElevation,
         gamma_break=gamma_break,
+        sampling_frequency=sampling_frequency
     )
 
 
-#TODO: do I need to calibrate with both the das and awac on the same frequency grid
 
-
-#TODO: check whether the AWAC is getting its spectra from SUV or AUV
-#TODO: wave_frequency, wave energy density, directional wave energy density, from the florence AWAC.
 
 
 

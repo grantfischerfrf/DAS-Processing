@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, filtfilt, sosfiltfilt
 from scipy.ndimage import uniform_filter1d
 from datetime import datetime, timezone
 import os
@@ -28,14 +28,11 @@ def plot_timeSeries(data, channel:int):
     plt.close('all')
 
 
-def process_worker(i, all_files, savefolder, downsample=False, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
+def process_worker(i, all_files, savefolder, gauge_length=1.6, sampling_frequency=500, temporal_window=10, downsample=False, cutoff_frequency=1, downsample_frequency=2, multi_save=True):
 
     processor = None
 
     try:
-        gauge_length = 1.6
-        sampling_frequency = 500
-        temporal_window = 10
 
         previous_file = read_dasFile(all_files[i - 1])
         current_file  = read_dasFile(all_files[i])
@@ -171,7 +168,7 @@ class DASProcessor:
 
     def common_mode_removal(self, strain_temporal_detrend):
 
-        # 2: common - mode removal (spatial detrend)
+        # 2: common - mode removal (spatial detrend) -> remove signals that are common across all channels at an instance in time
         # - detrend across channels - removes DC offsets, biases, temp, lase drift etc... also should leave just the wave band
         # - done across channels (ex: noise from the laser hits the entire fiber at once - should be relatively uniform across channels)
 
@@ -189,6 +186,10 @@ class DASProcessor:
         # b, a = output[0], output[1] #unpack output
 
         filtered_strain = filtfilt(b, a, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
+
+        #newer filtering scheme is to use sosfiltfilt for all iir filtering as it is stable for higher order filters and can handle lower order filters - difference between the two is negligible for low order filters
+        # sos = butter(butter_order, cutoff_frequency, btype='lowpass', fs=self.sampling_frequency, analog=False, output='sos') #returns second-order sections representation of the filter
+        # filtered_strain = sosfiltfilt(sos, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
 
         return filtered_strain
 
@@ -309,12 +310,7 @@ if __name__ == "__main__":
     processor.close()
 
 
-
-    #TODO: create a main function to run all of the above code.
-
     #TODO: The functions in process_file consume the most memory with copies of arrays
 
-    #TODO: work on the calibration function to sea surface elevation with data from the 8 meter array. Then analyze the signal effects with different wave energy and obliquity. burst level calibration is need for individual wave analysis
 
-    #TODO: create a band integrated energy map
 

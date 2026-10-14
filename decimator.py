@@ -54,10 +54,10 @@ def decimate_data(file_path, save_dir):
     step1 = decimate(raw_signal, 10, ftype='iir', axis=0, zero_phase=True) #zero_phase = True == no phase shift on the data - We are measuring phase shifts this is important to NOT change
 
     #step 2: factor of 5 - returns 10 Hz signal
-    step2 = decimate(step1, 5, ftype='iir', axis=0, zero_phase=True)
+    step2 = decimate(step1, 5, ftype='iir', axis=0, zero_phase=True)  #TODO: this should be a helper function run as many times as needed to safely decimate by documentation
 
     #step 3: factor of 5 - returns 2 Hz signal
-    step3 = decimate(step2, 5, ftype='iir', axis=0, zero_phase=True)
+    step3 = decimate(step2, 5, ftype='iir', axis=0, zero_phase=True)  #TODO: all these arguments should be passed as arguments to the function - no hard code
 
     downsampled_signal = step3 #rename
 

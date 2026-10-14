@@ -22,6 +22,33 @@ from scipy.interpolate import interp1d, LinearNDInterpolator
 from geoprocess import ncsp2FRF, FRFcoord
 
 
+def rebin_psd(f_src, S_src, f_tgt):
+    """Conservative rebin of a PSD onto target bins centered at f_tgt.
+    Bin edges are midpoints between target centers (outer edges extended by half a bin).
+    Returns the mean PSD over each target bin, so the area is conserved."""
+
+    # spacing between neighbouring target bin centers
+    d = np.diff(f_tgt)
+
+    # target bin edges: midpoints between neighbouring centers, with the first and last
+    # edge extended outward by half a bin so that every center has a lower and upper edge
+    # (len(edges) = len(f_tgt) + 1)
+    edges = np.concatenate(([f_tgt[0] - d[0] / 2],
+                            (f_tgt[:-1] + f_tgt[1:]) / 2,
+                            [f_tgt[-1] + d[-1] / 2]))
+
+    # cumulative integral of the source PSD (trapezoid), zero at f_src[0]
+    # F[i] = area under the source spectrum from f_src[0] up to f_src[i]
+    F = np.concatenate(([0.0], np.cumsum(0.5 * (S_src[1:] + S_src[:-1]) * np.diff(f_src))))
+
+    # evaluate the cumulative area at the target bin edges
+    # (interpolating the *integral*, not the spectrum, so partial source bins are weighted by overlap)
+    F_edges = np.interp(edges, f_src, F)
+
+    # area inside each target bin = difference of the cumulative area across its two edges;
+    # dividing by the bin width converts area back to a mean PSD value (units of the original PSD)
+    return np.diff(F_edges) / np.diff(edges)
+
 def get_burst_files(all_paths, start_time, burst_duration_min=35):
     """Pull all files whose timestamp falls within [start_time, start_time + burst_duration) """
     burst_end = start_time + timedelta(minutes=burst_duration_min)
@@ -2626,55 +2653,170 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 
 '''BULK WAVE STATISTICS XFRF 600M AWAC'''
-# starttime = datetime(2026, 6, 1, 0, 0, 0) #startime to clip data
-# starttime64 = np.datetime64(starttime)
-# endtime = datetime(2026, 6, 14, 8, 0, 0) #end time to clip data
-# endtime64 = np.datetime64(endtime)
+starttime = datetime(2026, 6, 1, 0, 0, 0) #startime to clip data
+starttime64 = np.datetime64(starttime)
+endtime = datetime(2026, 6, 14, 12, 0, 0) #end time to clip data
+endtime64 = np.datetime64(endtime)
+
+
+awac_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(awac_path) #load awac data
+
+time_mask = (time >= starttime64) & (time <= endtime64) #target data mask
+
+wave_band = (freqs >= 0.05) & (freqs <= 0.3) #target frequency band
+
+#mask desired variables in place
+S_f_theta_eta = S_f_theta_eta[time_mask, ...]
+time = time[time_mask]
+
+#compute Hs before smoothing
+S_f = integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction') #integrate over direction
+Hs, _, _ = compute_bulk_statistics(S_f, None, freqs, None, wave_band) #compute Hs
+
+S_f_smooth = smooth_spectrum(
+    integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction'),
+    window=5, filter_type='gaussian', mode='wrap')
+S_t_smooth = smooth_spectrum(
+    integrate_spectrum(S_f_theta_eta, freqs, axis=1, integrate_over='frequency'),
+    window=5, filter_type='gaussian', mode='wrap')
+
+_, Tp, thetap = compute_bulk_statistics(S_f_smooth, S_t_smooth, freqs, dirs)
+
+#plot the bulk statistics over time
+fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+
+axes[0].scatter(time, Hs, color='blue', s=10)
+axes[0].set_ylabel('Significant Wave Height (m)')
+axes[0].set_title('Significant Wave Height')
+axes[0].grid()
+
+axes[1].scatter(time, Tp, color='orange', s=10)
+axes[1].set_ylabel('Peak Period (s)')
+axes[1].set_title('Peak Period')
+axes[1].grid()
+
+axes[2].scatter(time, thetap, color='green', s=10)
+axes[2].set_ylabel('Peak Direction (deg)')
+axes[2].axhline(71.8535, color='black', linestyle='--', label='FRF Shore Normal')
+axes[2].set_xlabel('Time')
+axes[2].set_title('Peak Direction')
+axes[2].grid()
+axes[2].legend()
+
+fig.suptitle(f'Bulk Wave Statistics from AWAC 600m Data ({starttime.strftime("%Y_%m_%d_%H")} to {endtime.strftime("%Y_%m_%d_%H")})', fontsize=16, fontweight='bold')
+
+plt.tight_layout()
+plt.savefig('./figures/wave_information/AWAC600_bulkWaveStats.png')
+plt.show()
+plt.close('all')
+
+
+
+
+
+'''FREQUENCY DEPENDENT CALIBRATION C(x, f, t) - MAKING SURE THE MATH IS CORRECT'''
 #
+# # pull the calibration information for one single time but do not temporally average or integrate over frequency for the calibration factor
+# target_time = datetime(2026, 6, 14, 0, 0, 0)  # target time to check spectra
 #
-# awac_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
-# S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(awac_path) #load awac data
+# channel = 402
+# orientation = 'cross_shore'
 #
-# time_mask = (time >= starttime64) & (time <= endtime64) #target data mask
+# model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+# save_path = './figures/area_matching_freq_dependent'
+# das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
 #
-# #mask desired variables in place
-# S_f_theta_eta = S_f_theta_eta[time_mask, ...]
-# time = time[time_mask]
+# # pull Modeled AWAC spectrum
+# model_data_path = os.path.join(model_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
+# model_data = np.load(model_data_path, allow_pickle=True)  # read the data
+# model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
 #
-# S_f = smooth_spectrum(
-#     integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction'),
-#     window=5, filter_type='gaussian', mode='wrap')
-# S_t = smooth_spectrum(
-#     integrate_spectrum(S_f_theta_eta, freqs, axis=1, integrate_over='frequency'),
-#     window=5, filter_type='gaussian', mode='wrap')
+# model_Sf = model_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
+# C_f = model_data['calibration_coefficient_freq_dependent']  # frequency dependent calibration coefficient C(x, f, t)
+# model_freqs = model_data['awac_frequency_bins']  # awac frequency bins
+# # print(model_freqs.shape)
+# h = model_data['water_depth']  # water depth along the cable
+# calibration_flag = model_data['calibration_flag']  # flag for whether the calibration worked or failed a check, 1 is good, 0 means fail
 #
-# Hs, Tp, thetap = compute_bulk_statistics(S_f, S_t, freqs, dirs)
+# burst_files = get_burst_files(das_data_paths, target_time, 35)  # obtain all files inside a particular burst at the chosen target time. careful of hard coded burst duration
 #
-# #plot the bulk statistics over time
-# fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+# nperseg = round(2 / np.diff(model_freqs)[0])  # assumes constant spacing of the model frequency bins, computes the nperseg such that PSD bins equal those of the model
 #
-# axes[0].scatter(time, Hs, color='blue', s=10)
-# axes[0].set_ylabel('Significant Wave Height (m)')
-# axes[0].set_title('Significant Wave Height')
-# axes[0].grid()
+# das_freqs, das_PSD_raw = get_DAS_PSD_burst(burst_files, nperseg=nperseg, sampling_frequency=2)  # compute the power spectral density over the burst using welch's method
 #
-# axes[1].scatter(time, Tp, color='orange', s=10)
-# axes[1].set_ylabel('Peak Period (s)')
-# axes[1].set_title('Peak Period')
-# axes[1].grid()
+# # rebin onto the full AWAC grid, then clip both with the same mask
+# das_PSD_m = rebin_psd(das_freqs, das_PSD_raw[:, channel], model_freqs)
 #
-# axes[2].scatter(time, thetap, color='green', s=10)
-# axes[2].set_ylabel('Peak Direction (deg)')
-# axes[2].axhline(71.8535, color='black', linestyle='--', label='FRF Shore Normal')
-# axes[2].set_xlabel('Time')
-# axes[2].set_title('Peak Direction')
-# axes[2].grid()
-# axes[2].legend()
+# # print(das_freqs.shape)
+# # das_wave_band = (das_freqs >= 0.05) & (das_freqs <= 0.3)  # define the wave frequency band for the das
+# # das_PSD = das_PSD[das_wave_band, :]  # clip the power spectral density over the wave band  #TODO: issue here
+# # das_freqs = das_freqs[das_wave_band]  # clip the frequency bins by the wave band
 #
-# fig.suptitle(f'Bulk Wave Statistics from AWAC 600m Data ({starttime.strftime("%Y_%m_%d_%H")} to {endtime.strftime("%Y_%m_%d_%H")})', fontsize=16, fontweight='bold')
+# model_wave_band = (model_freqs >= 0.05) & (model_freqs <= 0.3)  # define the wave band, same mask now used for both the das and the awac
+# model_freqs = model_freqs[model_wave_band]  # constrain the awac frequencies over the wave band
+# das_PSD = das_PSD_m[model_wave_band]  # 1-D rebinned das PSD for this channel, clipped to the wave band, same length as model_freqs
+#
+# # define constants
+# rho = 1025  # kg/m^3 density of seawater
+# g = 9.81  # m/s^2 gravitational acceleration
+# h_local = h[channel]  # water depth at chosen DAS channel
+#
+# model_T = 1 / model_freqs  # convert awac frequency bins to period
+# model_k = wavenumber(h_local, model_T)  # awac wavenumber at each period / frequency bin
+# model_Kp = 1 / np.cosh(model_k * h_local)  # pressure response factor at each awac wavenumber
+#
+# # print(2 / np.diff(model_freqs)[0])          # should be a clean integer
+# # print(np.diff(das_freqs)[0], np.diff(model_freqs)[0])
+# # print(model_freqs[0] / np.diff(model_freqs)[0])   # integer → no offset
+# # print(np.max(np.abs(das_freqs - model_freqs)))
+#
+# Seta_f_model = model_Sf[channel, model_wave_band].T
+#
+# # convert awac SSE spectrum to pressure spectrum.
+# Sp_f_model = (Seta_f_model * (rho * g * model_Kp) ** 2) / 1e8  # convert pascals to decibars, (must square for units to match)
+#
+# # correct DAS spectrum to convert from phase_shifts to pressure
+# # stored coefficient: built on the OLD (shifted) das bins, so it will not reproduce the awac exactly
+# assert C_f.shape[1] == len(model_freqs), (C_f.shape, len(model_freqs))
+# Sp_f_das_stored = (das_PSD * C_f[channel, :]) / 1e8  # the calibration coefficient is for a pressure spectra - convert from pascals to dbars
+#
+# # recomputed coefficient: built from the SAME rebinned das spectrum, so the circular check closes exactly
+# C_new = (Sp_f_model * 1e8) / das_PSD  # C(x, f, t) on the unified grid, in pascals^2 / phase^2
+# Sp_f_das = (das_PSD * C_new) / 1e8  # equals Sp_f_model by construction - this is the circular plot
+# print('max |C_new / C_stored - 1|:', np.max(np.abs(C_new / C_f[channel, :] - 1)))  # how much the old binning mattered
+#
+# # integrate under the spectra - should yield essentially the same value if calibration was done correctly
+# Prms_das = np.sqrt(np.trapezoid(Sp_f_das, model_freqs))  # compute rms pressure value from the das pressure spectrum
+# Prms_model = np.sqrt(np.trapezoid(Sp_f_model, model_freqs))  # compute rms pressure value from the awac pressure spectrum
+# Prms_das_stored = np.sqrt(np.trapezoid(Sp_f_das_stored, model_freqs))  # same, but using the stored (old-grid) coefficient
+#
+# # print out metrics
+# print(f'Channel: {channel}, {orientation}')
+# print(f'PRESSURE RMS VALUES: \n DAS: {Prms_das} \n AWAC: {Prms_model} \n DAS (stored C): {Prms_das_stored}')
+# print("Calibration Flag: Pass" if calibration_flag[channel] else "Calibration Flag: Fail")
+#
+# # plot the spectra on the same plot
+# fig, axes = plt.subplots(1, 1, figsize=(12, 8))
+#
+# line1 = axes.plot(model_freqs, Sp_f_model, color='blue', label='Modeled Pressure PSD (AWAC)')  #TODO: all should be using the same bins for plotting here.
+#
+# line2 = axes.plot(model_freqs, Sp_f_das, color='red', label='DAS Pressure PSD (Calibrated)')
+# axes1 = axes.twinx()  # secondary y axis
+# line3 = axes1.plot(model_freqs, das_PSD, color='green', linestyle='--', label='DAS Phase Shift PSD')
+# axes1.set_ylabel('Phase Shift PSD (Rad²/Hz)', color='green')
+# axes1.tick_params(axis='y', color='green', labelcolor='green', which='both')
+# axes.set_xlabel('Frequency (Hz)')
+# axes.set_ylabel('Pressure PSD (dbar²/Hz)')
+# axes.set_title(f'Freq. Dependent Spectral Area Matching; Channel: {channel}, Time: {target_time.strftime("%Y-%m-%d %H:%M:%S")}')
+#
+# lines = line1 + line2 + line3
+# labels = [line.get_label() for line in lines]
+#
+# axes.legend(lines, labels, loc='best')
 #
 # plt.tight_layout()
-# plt.savefig('./figures/wave_information/AWAC600_bulkWaveStats.png')
+# plt.savefig(f'{save_path}/channel_{channel}_time_{target_time}_c(xft).png')
 # plt.show()
 # plt.close('all')
 
