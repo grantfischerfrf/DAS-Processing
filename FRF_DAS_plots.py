@@ -14,6 +14,7 @@ from utils import clip_by_time, sequence_number, read_dasFile, time2dateTime, lo
     get_orientation, strain2phase, get_burst_files, get_AWAC_data, smooth_spectrum, integrate_spectrum, compute_bulk_statistics, \
     rebin_psd
 from Calibration import wavenumber
+from config import DASConfig
 
 
 
@@ -621,14 +622,14 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
     S_t = integrate_spectrum(S_f_t[:, wave_band, :], freqs[wave_band], axis=1, integrate_over='frequency')
 
     #compute HS before smoothing
-    awac_Hs_all, _, _ = compute_bulk_statistics(S_f, S_t, freqs, dirs, wave_band)
+    awac_Hs_all, _, _ = compute_bulk_statistics(S_f, S_t, freqs[wave_band], dirs)
 
     #smooth the AWAC spectra
     S_t = smooth_spectrum(S_t, window=5, filter_type='gaussian', mode='wrap')
     S_f = smooth_spectrum(S_f, window=5, filter_type='gaussian', mode='wrap')
 
     #bulk wave statistics of the observed awac data (N_samples/time,)
-    _, awac_Tp_all, awac_thetap_all = compute_bulk_statistics(S_f, S_t, freqs, dirs, wave_band)
+    _, awac_Tp_all, awac_thetap_all = compute_bulk_statistics(S_f, S_t, freqs[wave_band], dirs) #TODO:issue with frequency band code in utils.py
 
     #initialize plot for visualization
     fig, axes = plt.subplots(1, 3, figsize=(15, 8))
@@ -674,7 +675,7 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
         model_S_t = integrate_spectrum(model_S_f_t[:, wave_band, :], bins=freqs[wave_band], axis=1, integrate_over='frequency')
 
         #compute Hs before smoothing
-        model_Hs_all, _, _ = compute_bulk_statistics(model_S_f, model_S_t, freqs, dirs, wave_band)
+        model_Hs_all, _, _ = compute_bulk_statistics(model_S_f, model_S_t, freqs[wave_band], dirs)
 
         model_S_t = smooth_spectrum(model_S_t, window=5, filter_type='gaussian', mode='wrap') #smooth the DAS spectra
         model_S_f = smooth_spectrum(model_S_f, window=5, filter_type='gaussian', mode='wrap')
@@ -691,7 +692,7 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
         count+=1
 
         # bulk wave statistics from the model shape: (n_channels,)
-        _, model_Tp_all, model_thetap_all = compute_bulk_statistics(model_S_f, model_S_t, freqs, dirs, frequency_band=wave_band)
+        _, model_Tp_all, model_thetap_all = compute_bulk_statistics(model_S_f, model_S_t, freqs[wave_band], dirs)
 
         #BULK STATISTICS
         awac_Hs = awac_Hs_all[idx] #300m awac Hs at the closest time to the model data
@@ -1041,7 +1042,8 @@ def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, calibCoeff_path, sav
         # pull Modeled AWAC spectrum
         model_data_path = os.path.join(model_data_dir, f'Calib_{timestamp.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
         model_data = np.load(model_data_path, allow_pickle=True)  # read the data
-        model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
+        if 'arr_0' in model_data:
+            model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
 
         model_Sf_full = model_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
         model_Sf = model_data['awac_cable_weighted_frequency_spectrum']  # awac frequency spectrum weighted by the incident wave direction - energy projected along the cable
@@ -1143,6 +1145,8 @@ def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, calibCoeff_path, sav
 
 if __name__ == "__main__":
 
+    config = DASConfig() #load configuration parameters
+
     #processed data
     # processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     # strain, time = load_processedData(processed_data_paths) #pull processed strain and time data
@@ -1221,9 +1225,9 @@ if __name__ == "__main__":
     # Calibrated_DAS_v_Model_allBursts(das_data_paths, model_data_paths, save_path)
 
     '''BULK WAVE PARAM COMPARISON BETWEEN MODEL AND AWAC'''
-    # awac_data_dir = './data/frf_awac/'
-    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    # AWAC_modelVobs(awac_data_dir, model_data_dir)
+    awac_data_dir = './data/frf_awac/'
+    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    AWAC_modelVobs(awac_data_dir, model_data_dir)
 
     '''BULK WAVE PARAM COMPARISON BETWEEN 300 AND 600 AWACS'''
     # awac_data_dir = './data/frf_awac/'
@@ -1247,17 +1251,17 @@ if __name__ == "__main__":
     # C_f_v_Time(model_dir, save_dir, channel=402)
 
     '''COMPUTE BULK WAVE STATISTICS AT A CHANNEL'''
-    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
-    das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    dayAvg_C_f_paths = glob.glob('./data/frf_awac/freq_dependent_calib_coeff_weighted/*.npy')  # day averaged c(f)
+    model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  # day averaged c(f)
     filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  # remove files without a number in the path
     save_path = './figures/wave_information'
-    Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_dependent')
+    Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_independent')
 
 
 
 
-    #TODO:Finally do the wave direction stuff
+    #TODO: Finally do the wave direction stuff
 
     #TODO: f - k plots of the DAS PSD one in the cross shore leg and one on the alongshore leg (need gradient in x to compute the wave number k) - This will distort under oblique waves
 
@@ -1269,11 +1273,15 @@ if __name__ == "__main__":
 
     #TODO: make a run frf DAS Plots script at the end of this
 
-    #TODO:check to make sure wave refraction is working - do this while checking with marcelas code - coarseness of the direction binning may affect the refraction - things may be shore normal but be marked in a bin a few degrees off.
-
     #TODO: change the name of where the model data resides to calibration_data - not calib coefficients
 
-    #TODO: add a script/class that holds all data constants with an @dataclass decorator
+    #TODO: update paths and hardcoded constants to use the new config.py script
+
+    #TODO: rewrite the calibration script
+
+    #TODO: check that the pressure response value Kp (k and h) is the same for the calibration script and the plotting script
+
+    #TODO: refine the script used to generate the depths along the DAS cable
 
 
 

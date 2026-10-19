@@ -11,6 +11,7 @@ import h5py
 from scipy.signal import welch
 from scipy.interpolate import interp1d
 from tqdm import tqdm
+from config import DASConfig
 
 
 
@@ -178,7 +179,7 @@ def get_DAS_PSD_burst(file_list, nperseg=256, sampling_frequency=2):
     raw_phase = []
     for f in file_list:
         strain, time = load_processedData(f)
-        phase = strain2phase(strain)
+        phase = strain2phase(strain) #convert strain back to phase - strain transfer function not applicable for this cable
         raw_phase.append(phase)
 
     raw_concat = np.concatenate(raw_phase, axis=0)  # concatenate along the time axis
@@ -347,7 +348,9 @@ def average_C_f_over_day(data_dir, save_dir):
             prev_day = day  #if the placeholder is None, populate it
 
         data = np.load(path, allow_pickle=True)
-        data = data['arr_0'].item() #go through first header
+
+        if 'arr_0' in data:
+            data = data['arr_0'].item() #go through first header  #TODO: is this ok
 
         c = data['calibration_coefficient_freq_dependent'] #calibration coefficient
 
@@ -603,9 +606,11 @@ if __name__ == "__main__":
     #     # Then, recursively visit all objects inside the file
     #     f.visititems(print_all_attributes)
 
+    config = DASConfig()
+
     #average frequency dependent calibration coefficient over all data bursts
-    save_dir = './data/frf_awac/freq_dependent_calib_coeff_weighted'
-    data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
+    save_dir = config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted'
+    data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
     # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
     average_C_f_over_day(data_dir, save_dir)
 
