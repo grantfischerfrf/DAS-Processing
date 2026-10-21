@@ -4,20 +4,17 @@ from tqdm import tqdm
 from multiprocessing import Pool
 from functools import partial
 
-from decimator import decimate_data
-from FRF_DAS_processing import sequence_number
+from decimator import decimate_data, sequence_number
 
 
 if __name__ == "__main__":
 
-    #!!multiprocessing must be run from a separate script that loads the functions
-
-    datafolder = "/mnt/d/For_OSU_raw/20260614/"
-    save_dir = os.path.join(os.getcwd(), "data", "for_OSU", "20260614")
+    datafolder = "/mnt/d/For_OSU_raw/20260614/"  #USER INPUT - data directory
+    save_dir = os.path.join(os.getcwd(), "data", "for_OSU", "20260614")  #USER INPUT
 
     #creates a sorted list of files for processing
     all_files = sorted(
-        glob.glob(os.path.join(datafolder, "*.h5")),
+        glob.glob(os.path.join(datafolder, "*.h5")), #pull all hdf5 files in the folder
         key=sequence_number
     )
 
