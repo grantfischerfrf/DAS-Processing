@@ -150,7 +150,7 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
     refract_dir = (np.abs(theta0_deg_grid[order]) < 80)[None, :]  # (1, ndir) # only consider waves that are within 80 degrees of the shore normal for refraction. avoid singularity in Snells law
     cos1_min = 0.1  # minimum cos(theta1) to avoid singularity in Snell's law. This is a small angle of incidence (theta1 ~ 84 degrees)
 
-    dir_exp = 2  # direction exponent  #TODO: is 2 the correct exponent here? -> initial first guess because energy scales as trig_function^2(theta)
+    dir_exp = config.directional_weight  # direction exponent  #TODO: is 2 the correct exponent here? -> initial first guess because energy scales as trig_function^2(theta)
     D_cross = np.abs(cos_theta0) ** dir_exp  # cross-shore cable: along-axis waves produce the greatest response
     D_along = np.abs(sin_theta0) ** dir_exp  # alongshore cable: waves perpendicular to the cable procduce the smallest response
 
@@ -310,50 +310,56 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
 
             else:  # alongshore channels
                 if S_corner is None:  # corner was dry or flagged
-                    calibration_flag[ch] = 0
+                    calibration_flag[ch] = 0 # flag the channel as bad calibration
                     continue
                 S1_local = S_corner * (cg_corner / cg1)  # re-shoal from corner, no refraction; (nf,ndir)*(nf,1)
 
-            # everything below runs for both branches
-            S1_integrated = np.nansum(S1_local, axis=1) * dtheta
-            water_depth[ch] = h1
+            S1_integrated = np.nansum(S1_local, axis=1) * dtheta # integrate over direction to get the 1D spectrum at the current channel location, shape (nf,)
+            water_depth[ch] = h1 # store the water depth at the current channel location
 
             # depth-limited breaking cap
-            m0 = np.nansum(S1_integrated * df)
-            Hrms = np.sqrt(8 * m0)
-            Hmax = config.gamma * h1
-            if Hrms > Hmax:
+            # compute the scaling factor to apply to the spectrum to account for depth-induced dissipation. Squared because energy scales with amplitude squared -> mo_new = s * mo_old. mo ~ Hrms**2
+            m0 = np.nansum(S1_integrated * df) # compute the zeroth moment of the 1D spectrum at the current channel location
+            Hrms = np.sqrt(8 * m0) # compute the Hrms at the current channel location
+            Hmax = config.gamma * h1 # compute the maximum wave height using the breaker index -> gamma = Hb / hb (wave height at breaking / water depth at breaking)
+            if Hrms > Hmax: #if the rms wave height is greater than Hmax
                 scale = (Hmax / Hrms) ** 2
-                S1_local = S1_local * scale
-                S1_integrated = S1_integrated * scale
+                S1_local = S1_local * scale #apply the scaling factor to the 2D spectrum at the current channel location
+                S1_integrated = S1_integrated * scale #apply the scaling factor to the 1D spectrum at the current channel location
 
-            if ch == alongshore_channel_start - 1:  # corner channel
-                S_corner = S1_local.copy()
-                cg_corner = cg1.copy()  # (nf, 1)
+            #This should be ok for a cable that wraps back on itself. When ch reaches alongshore channel end location it should just be S_corner again.
+            if ch == alongshore_channel_start - 1:  # if the channel is at the corner of the DAS grid. Switch from crossshore to alongshore orientation
+                S_corner = S1_local.copy() # copy the refracted spectrum at the corner channel to use for alongshore channels (nf, ndir)
+                cg_corner = cg1.copy()  # copy the group speed value at the corner channel to use for shoaling in the alongshore channels (nf, 1)
 
-            S1_directional_spectrum[ch] = S1_local
-            S1_integrated_spectrum[ch] = S1_integrated
+            S1_directional_spectrum[ch] = S1_local # store the 2D spectrum at the current channel location (nf, ndir)
+            S1_integrated_spectrum[ch] = S1_integrated # store the 1D integrated spectrum at the current channel location (nf,)
 
             # cable weighting and pressure
-            D = directional_weight(ch)
-            S1_weight = np.nansum(S1_local * D[None, :], axis=1) * dtheta
-            pressure_spectrum = S1_weight * (config.rho * config.g * Kp_grid[ch]) ** 2
-            S1_weight_spectrum[ch] = S1_weight
-            D_weight[ch] = np.nansum(S1_local * D[None, :]) / np.nansum(S1_local)
+            D = directional_weight(ch)  # get the directional weight for this channel, shape : (n_dirs)
+            S1_weight = np.nansum(S1_local * D[None, :], axis=1) * dtheta # compute the weighted 1D spectrum by integrating over direction with the directional weight, shape : (n_freqs)
+            pressure_spectrum = S1_weight * (config.rho * config.g * Kp_grid[ch]) ** 2 #convert the 1D SSE spectrum to dynamic pressure spectrum using linear wave theory
+            S1_weight_spectrum[ch] = S1_weight # save the 1D SSE weighted spectrum at the current channel location
+            D_weight[ch] = np.nansum(S1_local[awac_wave_band, :] * D[None, :]) / np.nansum(S1_local[awac_wave_band, :]) #scalar weight averaged over frequency and direction.
+            # 1 means waves are ~ cable orientation. 0 means oblique waves
+            # no bins needed with np.nansum because it is a ratio here
 
-            # calibration
-            das_psd_variance = np.trapezoid(das_PSD[awac_wave_band], awac_freqs[awac_wave_band])
-            awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band])
-            if not (np.isfinite(das_psd_variance) and das_psd_variance > 0
+            # Calibration
+            das_psd_variance = np.trapezoid(das_PSD[awac_wave_band], awac_freqs[awac_wave_band]) #compute the total variance of the das spectrum - band passed
+            awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band]) #compute the total variance of the awac pressure spectrum - band passed
+            if not (np.isfinite(das_psd_variance) and das_psd_variance > 0  #if the das and awac psd variance are not finite and greater than 0:
                     and np.isfinite(awac_psd_variance) and awac_psd_variance > 0):
-                calibration_flag[ch] = 0
+                calibration_flag[ch] = 0 #flag calibration as bad
                 continue
 
+            #Frequency Independent Calibration C(x, t)
             C[ch] = awac_psd_variance / das_psd_variance
-            with np.errstate(divide="ignore", invalid="ignore"):
+
+            #Frequency Dependent Calibration C(x, f, t)
+            with np.errstate(divide="ignore", invalid="ignore"): #ignore divide by zero errors and NaN warnings
                 C_f[ch, :] = pressure_spectrum[awac_wave_band] / das_PSD[awac_wave_band]
 
-        # back at the burst-loop level, after the channel loop
+        # Saving
         save_dict = {
             "calibration_coefficient": C,
             "calibration_coefficient_freq_dependent": C_f,
@@ -367,6 +373,8 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
             "water_depth": water_depth,
             "calibration_flag": calibration_flag,
         }
+
+        #**save dict, removes the 'arr0' header and creates a npz file with dictionary keys equal to
         np.savez_compressed(
             f'{save_folder}/Calib{b_start.strftime("_%Y-%m-%d_%H_%M_%S")}.npz',
             **save_dict,

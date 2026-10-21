@@ -350,7 +350,7 @@ def average_C_f_over_day(data_dir, save_dir):
         data = np.load(path, allow_pickle=True)
 
         if 'arr_0' in data:
-            data = data['arr_0'].item() #go through first header  #TODO: is this ok
+            data = data['arr_0'].item() #go through first header
 
         c = data['calibration_coefficient_freq_dependent'] #calibration coefficient
 

@@ -5,8 +5,9 @@ from pathlib import Path
 class DASConfig():
 
     '''
-    This class holds all necessary hardcoded variables and paths needed in the various scripts in this repository
+    This class holds all necessary hardcoded variables and paths needed in the various scripts of this repository
     frozen=True makes the dataclass immutable, so that the values cannot be changed after initialization.
+    The User should input their own specified values below:
     '''
 
     # --- DAS CABLE PARAMETERS ---
@@ -21,7 +22,11 @@ class DASConfig():
     # --- AWAC PARAMETERS ---
     awac600_channel_location: int = 402 #channel number of the AWAC 600m xFRF location along the DAS cable
     awac300_channel_location: int = 208 #channel number of the AWAC 300m xFRF location along the DAS cable
+
+    # --- CALIBRATION PARAMETERS ---
     burst_duration: int = 35 #minutes - duration of the data collection bursts for the AWACs
+    min_files_per_burst: int = 6 #minimum number of DAS files required for calibration with the AWAC data burst. Ex: 5min DAS files, 35min AWAC data burst. 35/5 = 7. 7-1=6 to allow for edge datasets
+    burst_tolerance_sec: int = 0 #tolerance in seconds for defining if a timestamp is part of a specific DAS burst. Ex: if you want time 2026_06_01-0:35:1 to be part of group 2026_06_01-0:35:0
 
     # --- FRF SPECIFICS ---
     FRF_orientation: float = 71.8535 # degrees - orientation of the FRF beach to true north in wgs84
@@ -39,7 +44,7 @@ class DASConfig():
     wave_band_max: float = 0.3 # Hz - upper limit of the wave band
     nperseg: int = 512 # number of points in each segment for the Welch estimate
     noverlap: int = field(init=False) # number of points to overlap between segments for the Welch estimate
-    directional_weight: int = 2 # exponent used in the directional weighting of the model spectra in Calibration.py
+    directional_weight: int = 4 # exponent used in the directional weighting of the model spectra in Calibration.py
 
     # --- DIRECTORIES ---
     root: Path = Path('.') #'.' means current working directory

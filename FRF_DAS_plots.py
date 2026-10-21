@@ -446,7 +446,8 @@ def Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_tim
     # pull AWAC spectrum
     model_data_path = os.path.join(model_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz') #define awac data path
     model_data = np.load(model_data_path, allow_pickle=True) #read the data
-    model_data = model_data['arr_0'].item() #open the dictionary and get past the initial format
+    if 'arr_0' in model_data:
+        model_data = model_data['arr_0'].item() #open the dictionary and get past the initial format
 
     C = model_data['calibration_coefficient'] #calibration coefficient generated through spectral area matching. Using the script run_Emprirical_Calibration.py
     # model_Sf = model_data['awac_corrected_frequency_spectrum']#awac frequency spectrum
@@ -872,7 +873,8 @@ def Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, calibC
     # pull Modeled AWAC spectrum
     model_data_path = os.path.join(model_data_dir, f'Calib_{target_time.strftime("%Y-%m-%d_%H_%M_%S")}.npz')  # define awac data path
     model_data = np.load(model_data_path, allow_pickle=True)  # read the data
-    model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
+    if 'arr_0' in model_data:
+        model_data = model_data['arr_0'].item()  # open the dictionary and get past the initial format
 
     # model_Sf = model_data['awac_corrected_frequency_spectrum']  # awac frequency spectrum
     model_Sf = model_data['awac_cable_weighted_frequency_spectrum'] #awac frequency spectrum weighted by the incident wave direction - energy projected along the cable
@@ -957,7 +959,8 @@ def C_f_v_Time(model_data_dir, save_path, channel):
     for path in tqdm(calib_data_paths, colour='yellow'):
         time.append(sequence_number(path))
         data = np.load(path, allow_pickle=True)  # load data
-        data = data['arr_0'].item()  # go through first header
+        if 'arr_0' in data:
+            data = data['arr_0'].item()  # go through first header if it exists
 
         c = data['calibration_coefficient_freq_dependent']  # pull only the frequency dependent calibration coefficient
         freqs = data['awac_frequency_bins']  # pull the frequency bins
@@ -967,7 +970,7 @@ def C_f_v_Time(model_data_dir, save_path, channel):
     c_all = np.stack(c_all)  # shape (n_bursts, n_channels, n_freqs)
     C_avg = np.nanmedian(c_all, axis=0)  # take the temporal median of the frequency dependent calibration coefficient
 
-    wave_band = (freqs >= 0.05) & (freqs <= 0.3)  # define the wave band, same as das but has different bin widths so needs a different variable.
+    wave_band = (freqs >= config.wave_band_min) & (freqs <= config.wave_band_max)  # define the wave band, same as das but has different bin widths so needs a different variable.
 
     #plot C as a function of frequency for all time
     time_mpl = mdates.date2num(time)  # convert time to matplotlib format
@@ -1137,7 +1140,82 @@ def Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, calibCoeff_path, sav
     plt.close('all')
 
 
+def C_f_v_direction(model_data_dir, save_dir, channel):
 
+    calib_data_paths = sorted(glob.glob(os.path.join(model_data_dir, '*.npz')), key=sequence_number)  # list of all calibration coefficient files in the directory
+
+    c_all = []  # empty array for calibration coefficients
+    time = []  # empty array for time
+    d_all = [] #empty array for directional weighting
+
+    fig = plt.figure(figsize=(15, 8))
+    axes = fig.add_subplot(111)
+
+    tqdm.write('Loading Calibration Coefficients...')
+    for path in tqdm(calib_data_paths, colour='yellow'):
+        time.append(sequence_number(path))
+        data = np.load(path, allow_pickle=True)  # load data
+
+        if data['calibration_flag'][channel] == 0:
+            continue
+
+        if 'arr_0' in data:
+            data = data['arr_0'].item()  # go through first header if it exists
+
+        freqs = data['awac_frequency_bins']  # pull the frequency bins
+        wave_band = (freqs >= config.wave_band_min) & (freqs <= config.wave_band_max)
+
+        C_f = data['calibration_coefficient_freq_dependent'][channel]  # pull only the frequency dependent calibration coefficient
+        S = data['awac_corrected_frequency_spectrum'][channel, wave_band]
+        S_w = data['awac_cable_weighted_frequency_spectrum'][channel, wave_band]
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            D_f = S_w / S
+
+        # axes.plot(D_f, C_f, color="gray", alpha=0.15, lw=0.8)  # one thin line per burst
+        # sc = axes.scatter(D_f, C_f, c=freqs[wave_band], s=6, cmap="viridis", vmin=config.wave_band_min, vmax=config.wave_band_max, zorder=3)  # points colored by frequency
+
+        d_all.append(D_f)
+        c_all.append(C_f)
+
+    #COLOR PLOT BY TIME
+    time_mpl = mdates.date2num(time)
+    norm = plt.Normalize(time_mpl.min(), time_mpl.max())
+    cmap = plt.get_cmap('viridis')
+
+    fig, axes = plt.subplots(figsize=(15, 8))
+    for c, d, t in zip(c_all, d_all, time_mpl):
+        axes.scatter(d, c, color=cmap(norm(t)), s=6, alpha=0.5)
+
+    axes.set_yscale('log')
+    axes.set_xlabel('$D_f$ (effective directional weight)')
+    axes.set_ylabel('Calibration Coefficient (-/-)')
+
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(sm, ax=axes)
+    cbar.set_label('Time')
+    cbar.ax.yaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+
+    # binned median trend across all bursts and frequencies
+    D_all = np.concatenate(d_all)
+    C_all = np.concatenate(c_all)
+    ok = np.isfinite(D_all) & np.isfinite(C_all) & (C_all > 0)
+    bins = np.linspace(np.nanmin(D_all[ok]), np.nanmax(D_all[ok]), 15)
+    idx = np.digitize(D_all[ok], bins)
+    centers = [(bins[i - 1] + bins[i]) / 2 for i in range(1, len(bins)) if (idx == i).sum() > 5]
+    medians = [np.median(C_all[ok][idx == i]) for i in range(1, len(bins)) if (idx == i).sum() > 5]
+    axes.plot(centers, medians, "r-o", lw=2, zorder=4, label="binned median")
+    #
+    axes.set_yscale("log")
+    axes.set_xlabel("$D_f$ (effective directional weight)")
+    axes.set_ylabel("$C_f$")
+    # plt.colorbar(sc, ax=axes, label="Frequency (Hz)")
+    axes.legend()
+    axes.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f'{save_dir}/channel_{channel}_C_f_v_direction.png')
+    plt.show()
+    plt.close('all')
 
 
 
@@ -1212,10 +1290,10 @@ if __name__ == "__main__":
     # PSD_One_Channel(processed_data_paths, channel, nperseg, noverlap)
 
     '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST - FREQUENCY INDEPENDENT CALIBRATION'''
-    # target_time = datetime(2026, 6, 2, 22, 0, 0) #target time to check spectra
-    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
-    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    # save_path = './figures/area_matching'
+    # target_time = datetime(2026, 6, 1, 5, 0, 0) #target time to check spectra
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    # save_path = config.figure_directory / 'area_matching'
     # Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=402)
 
     '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
@@ -1225,38 +1303,45 @@ if __name__ == "__main__":
     # Calibrated_DAS_v_Model_allBursts(das_data_paths, model_data_paths, save_path)
 
     '''BULK WAVE PARAM COMPARISON BETWEEN MODEL AND AWAC'''
-    awac_data_dir = './data/frf_awac/'
-    model_data_dir = './data/frf_awac/calibration_coefficients_burst_600'
-    AWAC_modelVobs(awac_data_dir, model_data_dir)
+    # awac_data_dir = config.data_directory / 'frf_awac/'
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # AWAC_modelVobs(awac_data_dir, model_data_dir)
 
     '''BULK WAVE PARAM COMPARISON BETWEEN 300 AND 600 AWACS'''
-    # awac_data_dir = './data/frf_awac/'
-    # save_dir = './figures'
+    # awac_data_dir = config.data_directory / 'frf_awac/'
+    # save_dir = config.figure_directory
     # AWAC300_v_AWAC600(awac_data_dir, save_dir)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT - DAS V MODEL'''
-    # target_time = datetime(2026, 6, 2, 22, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
-    # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
-    # model_data_dir = './data/frf_awac/calibration_coefficients_burst_600_weighted'
-    # save_path = './figures/area_matching_freq_dependent'
-    # # allAvg_C_f_path = './data/frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'   #entire dataset averaged c(f)
-    # dayAvg_C_f_paths = glob.glob('./data/frf_awac/freq_dependent_calib_coeff_weighted/*.npy')  #day averaged c(f)
+    # target_time = datetime(2026, 6, 8, 7, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
+    # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # save_path = config.figure_directory / 'area_matching_freq_dependent'
+    # # allAvg_C_f_path = config.data_directory / 'frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'   #entire dataset averaged c(f)
+    # dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  #day averaged c(f)
     # filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
-    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=402)
+    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=705)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT OVER TIME'''
     # # average frequency dependent calibration coefficient over all data bursts
-    # save_dir = './figures'
-    # model_dir = './data/frf_awac/calibration_coefficients_burst_600'
+    # save_dir = config.figure_directory
+    # model_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
     # C_f_v_Time(model_dir, save_dir, channel=402)
 
     '''COMPUTE BULK WAVE STATISTICS AT A CHANNEL'''
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    # dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  # day averaged c(f)
+    # filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  # remove files without a number in the path
+    # save_path = config.figure_directory / 'wave_information'
+    # Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_dependent')
+
+
+    '''C_f v directional weight'''
     model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
-    dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  # day averaged c(f)
-    filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  # remove files without a number in the path
-    save_path = './figures/wave_information'
-    Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_independent')
+    save_dir = config.figure_directory / 'wave_information'
+    C_f_v_direction(model_data_dir, save_dir, channel=402)
+
 
 
 
@@ -1275,13 +1360,15 @@ if __name__ == "__main__":
 
     #TODO: change the name of where the model data resides to calibration_data - not calib coefficients
 
-    #TODO: update paths and hardcoded constants to use the new config.py script
-
-    #TODO: rewrite the calibration script
-
     #TODO: check that the pressure response value Kp (k and h) is the same for the calibration script and the plotting script
 
-    #TODO: refine the script used to generate the depths along the DAS cable
+    #TODO: refine the script used to generate the depths along the DAS cable (dasXYZgrid)
+
+    #TODO: check that alongshore cable end channel and alongshore cable start channel are in exactly the same place - this must be true for the calibration to be precise.
+
+    #TODO: check with people if I need to scale the total variance of the 2D spectrum to match the 1D spectrum (AWAC)
+
+    #TODO: plot C v the directional weight. if direction is modeled correctly there should be little dependence of C on direction
 
 
 

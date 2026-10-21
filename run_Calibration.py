@@ -14,9 +14,7 @@ from config import DASConfig
 if __name__ == "__main__":
 
     # --- BURST LEVEL CALIBRATION ---
-    config = DASConfig()
-
-    # all_files = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
+    config = DASConfig() #initialize configuration parameters
 
     all_files = sorted(glob.glob(f'{config.data_directory}/for_OSU_processed/**/*'), key=sequence_number) #list of sorted DAS files in the data folder
 
@@ -28,8 +26,8 @@ if __name__ == "__main__":
 
     # group into top of the hour 35 minute bursts of files
     BURST_DURATION_MIN = config.burst_duration  #how long each burst is -> 35 minutes
-    MIN_FILES_PER_BURST = 6  # accept bursts greater than 6 files (allows for edge-of-dataset partial hours)  #TODO: add to config.py
-    BURST_TOLERANCE_SEC = 0 #tolerance in seconds
+    MIN_FILES_PER_BURST = config.min_files_per_burst  # accept bursts greater than 6 files (allows for edge-of-dataset partial hours)
+    BURST_TOLERANCE_SEC = config.burst_tolerance_sec #tolerance in seconds
 
     bursts = defaultdict(list)  #creates a special dictionary the automatically creates an empty list whenever you access a new key. [] - [files]
     for f in all_files: #loop through every das file

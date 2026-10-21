@@ -139,11 +139,11 @@ class DASProcessor:
         strain_common_mode_removed = self.common_mode_removal(strain_temporal_detrend)  # common - mode removal (spatial detrend)
 
         if downsample:
+            #lowpass filter the data
             strain_low_pass_filtered = self.low_pass_filter(strain_common_mode_removed, cutoff_frequency=cutoff_frequency)  # low pass filter to remove high frequency noise
 
-            #downsample the data
-            strain_low_pass_filtered = strain_low_pass_filtered[start_clip:stop_clip]  #clip strain and time arrays
-            time_seconds = time_seconds[start_clip:stop_clip]
+            strain_low_pass_filtered = strain_low_pass_filtered[start_clip:stop_clip]  #clip strain and time arrays to isolate the original file we wanted to process
+            time_seconds = time_seconds[start_clip:stop_clip] #pull the matching timestamps
 
             #downsample
             strain_downsampled, time_downsampled = self.downsample(strain_low_pass_filtered, time_seconds, downsample_frequency=downsample_frequency)
