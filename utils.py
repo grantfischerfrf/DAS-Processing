@@ -113,6 +113,38 @@ def read_dasFile(file_path:str):
     return data_vars
 
 
+def inspect_metadata(h5_file_path):
+    # This code opens an hdf5 file and lists out its contents
+    # f.visititems iterates through every object in the hdf5 file recursively and applies the helper function to it
+    # An object in an hdf5 file can either be a Dataset or a Group
+    # A Dataset holds the raw data - like an array. It has the shape, dtype, and attributes of the array under obj.attrs
+    # A Group is a folder which can contain Datasets or other nested subgroups - this creates the hierarchical structure that defines an hdf5 file
+    # Groups and subgroups can have attributes as well
+
+    with h5py.File(h5_file_path, "r") as f:
+
+        def inspect(name, obj):
+            print(f"\nPath: /{name}")
+            print(f"Type: {type(obj).__name__}")
+
+            # Print attributes attached to this object
+            for key, value in obj.attrs.items():
+                print(f"    ATTRIBUTE: {key} = {value}")
+
+            # If the object is a dataset, print its dimensions and data type
+            if isinstance(obj, h5py.Dataset):
+                print(f"    Shape: {obj.shape}")
+                print(f"    Data type: {obj.dtype}")
+
+        # Inspect the root-level attributes
+        print("ROOT ATTRIBUTES:")
+        for key, value in f.attrs.items():
+            print(f"    {key} = {value}")
+
+        # Visit every group and dataset recursively using the above function
+        f.visititems(inspect)
+
+
 def print_all_attributes(name, obj):
     if obj.attrs:
         print(f"\nAttributes for [{name}]:")
@@ -277,13 +309,14 @@ def integrate_spectrum(spectrum, bins, axis, integrate_over):
 
     if integrate_over == 'direction':
         db = np.gradient(bins)
-        return np.nansum(spectrum * db, axis=axis) #FIXME: if direction bins are not uniform this will cause edge effects at the 0-355 boundary - future problem
+        return np.nansum(spectrum * db, axis=axis) #FIXME: if direction bins are not uniform this will cause edge effects at the 0-355 boundary - maybe future problem
 
     if integrate_over == 'frequency':
         return np.trapezoid(spectrum, bins, axis=axis)
 
     if integrate_over not in ('frequency', 'direction'):
         raise ValueError(f"Invalid integrate_over: {integrate_over!r}. Choose 'frequency' or 'direction'.")
+
 
 def rebin_psd(f_src, S_src, f_tgt):
     """Conservative rebin of a PSD onto target bins centered at f_tgt.
@@ -462,8 +495,6 @@ def build_DAS_XYZ_grid():
     #TODO: refine this
 
     # find the DAS channel closest to the awac and get the PSD to a 34 (35 for DAS) minute burst (average)
-    # channel = 188 #around 300m out on the cross-shore
-    # channel = 375 #aroudn 600m out on the cross-shore
 
     #Number of channels
     N_channels = 1592
@@ -592,6 +623,8 @@ def build_DAS_XYZ_grid():
 
 
 if __name__ == "__main__":
+
+    config = DASConfig()
     #
     # #read_Json Files - DAS configuration and engineering chain
     # optical_setup = './documentation/FRF_Fiber1Mode8_Fiber2Mode10_1.6mGL_opticalSetUp.json'
@@ -605,12 +638,14 @@ if __name__ == "__main__":
     #     print_all_attributes(raw_file, f)
     #     # Then, recursively visit all objects inside the file
     #     f.visititems(print_all_attributes)
+    #
+    # #average frequency dependent calibration coefficient over all data bursts
+    # save_dir = config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted'
+    # data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
+    # average_C_f_over_day(data_dir, save_dir)
 
-    config = DASConfig()
-
-    #average frequency dependent calibration coefficient over all data bursts
-    save_dir = config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted'
-    data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
-    average_C_f_over_day(data_dir, save_dir)
+    #inspect metadata
+    das_file_path = config.data_directory / 'processed_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5'
+    inspect_metadata(das_file_path)
 

@@ -10,6 +10,7 @@ from utils import sequence_number, time2dateTime, strain2phase, load_processedDa
 import re
 from FRF_DAS_plots import waterFall
 from scipy.signal import welch
+import h5py
 from scipy import stats
 from scipy.stats import binned_statistic
 from scipy.ndimage import gaussian_filter1d
@@ -18,6 +19,7 @@ from Calibration import parse_das_timestamp
 import scipy
 from tqdm import tqdm
 from scipy.interpolate import interp1d, LinearNDInterpolator
+import shutil
 
 from geoprocess import ncsp2FRF, FRFcoord
 
@@ -2653,66 +2655,63 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 
 '''BULK WAVE STATISTICS XFRF 600M AWAC'''
-starttime = datetime(2026, 6, 1, 0, 0, 0) #startime to clip data
-starttime64 = np.datetime64(starttime)
-endtime = datetime(2026, 6, 14, 12, 0, 0) #end time to clip data
-endtime64 = np.datetime64(endtime)
-
-
-awac_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
-S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(awac_path) #load awac data
-
-time_mask = (time >= starttime64) & (time <= endtime64) #target data mask
-
-wave_band = (freqs >= 0.05) & (freqs <= 0.3) #target frequency band
-
-#mask desired variables in place
-S_f_theta_eta = S_f_theta_eta[time_mask, ...]
-time = time[time_mask]
-
-#compute Hs before smoothing
-S_f = integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction') #integrate over direction
-Hs, _, _ = compute_bulk_statistics(S_f, None, freqs, None, wave_band) #compute Hs
-
-S_f_smooth = smooth_spectrum(
-    integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction'),
-    window=5, filter_type='gaussian', mode='wrap')
-S_t_smooth = smooth_spectrum(
-    integrate_spectrum(S_f_theta_eta, freqs, axis=1, integrate_over='frequency'),
-    window=5, filter_type='gaussian', mode='wrap')
-
-_, Tp, thetap = compute_bulk_statistics(S_f_smooth, S_t_smooth, freqs, dirs)
-
-#plot the bulk statistics over time
-fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
-
-axes[0].scatter(time, Hs, color='blue', s=10)
-axes[0].set_ylabel('Significant Wave Height (m)')
-axes[0].set_title('Significant Wave Height')
-axes[0].grid()
-
-axes[1].scatter(time, Tp, color='orange', s=10)
-axes[1].set_ylabel('Peak Period (s)')
-axes[1].set_title('Peak Period')
-axes[1].grid()
-
-axes[2].scatter(time, thetap, color='green', s=10)
-axes[2].set_ylabel('Peak Direction (deg)')
-axes[2].axhline(71.8535, color='black', linestyle='--', label='FRF Shore Normal')
-axes[2].set_xlabel('Time')
-axes[2].set_title('Peak Direction')
-axes[2].grid()
-axes[2].legend()
-
-fig.suptitle(f'Bulk Wave Statistics from AWAC 600m Data ({starttime.strftime("%Y_%m_%d_%H")} to {endtime.strftime("%Y_%m_%d_%H")})', fontsize=16, fontweight='bold')
-
-plt.tight_layout()
-plt.savefig('./figures/wave_information/AWAC600_bulkWaveStats.png')
-plt.show()
-plt.close('all')
-
-
-
+# starttime = datetime(2026, 6, 1, 0, 0, 0) #startime to clip data
+# starttime64 = np.datetime64(starttime)
+# endtime = datetime(2026, 6, 14, 12, 0, 0) #end time to clip data
+# endtime64 = np.datetime64(endtime)
+#
+#
+# awac_path = './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+# S_f_theta_eta, freqs, dirs, time, dtheta, df, T, gaugeDepth, gaugeElevation, bottomElevation = get_AWAC_data(awac_path) #load awac data
+#
+# time_mask = (time >= starttime64) & (time <= endtime64) #target data mask
+#
+# wave_band = (freqs >= 0.05) & (freqs <= 0.3) #target frequency band
+#
+# #mask desired variables in place
+# S_f_theta_eta = S_f_theta_eta[time_mask, ...]
+# time = time[time_mask]
+#
+# #compute Hs before smoothing
+# S_f = integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction') #integrate over direction
+# Hs, _, _ = compute_bulk_statistics(S_f, None, freqs, None, wave_band) #compute Hs
+#
+# S_f_smooth = smooth_spectrum(
+#     integrate_spectrum(S_f_theta_eta, dirs, axis=-1, integrate_over='direction'),
+#     window=5, filter_type='gaussian', mode='wrap')
+# S_t_smooth = smooth_spectrum(
+#     integrate_spectrum(S_f_theta_eta, freqs, axis=1, integrate_over='frequency'),
+#     window=5, filter_type='gaussian', mode='wrap')
+#
+# _, Tp, thetap = compute_bulk_statistics(S_f_smooth, S_t_smooth, freqs, dirs)
+#
+# #plot the bulk statistics over time
+# fig, axes = plt.subplots(3, 1, figsize=(15, 10), sharex=True)
+#
+# axes[0].scatter(time, Hs, color='blue', s=10)
+# axes[0].set_ylabel('Significant Wave Height (m)')
+# axes[0].set_title('Significant Wave Height')
+# axes[0].grid()
+#
+# axes[1].scatter(time, Tp, color='orange', s=10)
+# axes[1].set_ylabel('Peak Period (s)')
+# axes[1].set_title('Peak Period')
+# axes[1].grid()
+#
+# axes[2].scatter(time, thetap, color='green', s=10)
+# axes[2].set_ylabel('Peak Direction (deg)')
+# axes[2].axhline(71.8535, color='black', linestyle='--', label='FRF Shore Normal')
+# axes[2].set_xlabel('Time')
+# axes[2].set_title('Peak Direction')
+# axes[2].grid()
+# axes[2].legend()
+#
+# fig.suptitle(f'Bulk Wave Statistics from AWAC 600m Data ({starttime.strftime("%Y_%m_%d_%H")} to {endtime.strftime("%Y_%m_%d_%H")})', fontsize=16, fontweight='bold')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/wave_information/AWAC600_bulkWaveStats.png')
+# plt.show()
+# plt.close('all')
 
 
 '''FREQUENCY DEPENDENT CALIBRATION C(x, f, t) - MAKING SURE THE MATH IS CORRECT'''
@@ -2819,6 +2818,116 @@ plt.close('all')
 # plt.savefig(f'{save_path}/channel_{channel}_time_{target_time}_c(xft).png')
 # plt.show()
 # plt.close('all')
+
+
+
+'''PULL METADATA FROM DAS FILE'''
+#This code opens an hdf5 file and lists out its contents
+#f.visititems iterates through every object in the hdf5 file recursively and applies the helper function to it
+# An object in an hdf5 file can either be a Dataset or a Group
+# A Dataset holds the raw data - like an array. It has the shape, dtype, and attributes of the array under obj.attrs
+# A Group is a folder which can contain Datasets or other nested subgroups - this creates the hierarchical structure that defines an hdf5 file
+# Groups and subgroups can have attributes as well
+# das_file_path = './data/raw_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5'
+# decimated_save_path = './data/processed_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5'
+
+# with h5py.File(decimated_save_path, "r") as f:
+#
+#     def inspect(name, obj):
+#         print(f"\nPath: /{name}")
+#         print(f"Type: {type(obj).__name__}")
+#
+#         # Print attributes attached to this object
+#         for key, value in obj.attrs.items():
+#             print(f"    ATTRIBUTE: {key} = {value}")
+#
+#         # If the object is a dataset, print its dimensions and data type
+#         if isinstance(obj, h5py.Dataset):
+#             print(f"    Shape: {obj.shape}")
+#             print(f"    Data type: {obj.dtype}")
+#
+#     # Inspect the root-level attributes
+#     print("ROOT ATTRIBUTES:")
+#     for key, value in f.attrs.items():
+#         print(f"    {key} = {value}")
+#
+#     # Visit every group and dataset recursively using the above function
+#     f.visititems(inspect)
+#
+#
+# signal_path = '/Acquisition/Raw[0]/RawData'
+# time_path = '/Acquisition/Raw[0]/RawDataTime'
+# count_path = '/Acquisition/Raw[0]/RawDataSampleCount'
+# acquisition_path = '/Acquisition'
+#
+# dummy_signal = np.arange(0, 10, 1)
+# dummy_time = np.arange(10, 20, 1)
+# dummy_count = np.arange(20, 30, 1)
+#
+# shutil.copy2(das_file_path, decimated_save_path)
+#
+# with h5py.File(das_file_path, "r") as src:
+#     signal = src[signal_path][:]
+#     time = src[time_path][:]
+#     count = src[count_path][:]
+#
+#     acquisition_attrs = dict(src[acquisition_path].attrs)
+#     signal_attrs = dict(src[signal_path].attrs)
+#     time_attrs = dict(src[time_path].attrs)
+#     count_attrs = dict(src[count_path].attrs)
+#
+#     #update metadata dictionaries
+#     signal_attrs['Count'] = len(dummy_signal)  # replace some metadata with new values
+#     acquisition_attrs['PulseRate'] = 2.0
+#
+#     # print(signal_attrs)
+#
+#
+# with h5py.File(decimated_save_path, "r+") as dst:
+#
+#     #update the attributes attached to the acquisition group
+#     for key, value in acquisition_attrs.items():
+#         dst[acquisition_path].attrs[key]=value
+#
+#     for path, data, attrs in [
+#         (signal_path, dummy_signal, signal_attrs),
+#         (time_path, dummy_time, time_attrs),
+#         (count_path, dummy_count, count_attrs)
+#     ]:
+#
+#         parent_path, name = path.rsplit("/", 1) #split the parent path from the dataset name
+#         parent = dst[parent_path or "/"] #get the parent group
+#
+#         del dst[path] #delete the original dataset
+#         new_dataset = parent.create_dataset(name, data=data) #create the replacement dataset from the new data. the shape and dtype will automatically update
+#
+#         for key, value in attrs.items():  #restore the original metadata to the new dataset
+#             new_dataset.attrs[key] = value
+
+# print("Decimated signal and time saved.")
+
+
+
+# def inspect_file(path):  #inspects the file size of two different files
+#     print(f"\nFile: {path}")
+#     print(f"File size: {os.path.getsize(path) / 1e9:.3f} GB")
+#
+#     with h5py.File(path, "r") as f:
+#
+#         def inspect(name, obj):
+#             if isinstance(obj, h5py.Dataset):
+#                 print(
+#                     f"/{name}: "
+#                     f"shape={obj.shape}, "
+#                     f"dtype={obj.dtype}, "
+#                     f"storage={obj.id.get_storage_size() / 1e9:.3f} GB"
+#                 )
+#
+#         f.visititems(inspect)
+#
+#
+# inspect_file("./data/raw_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5")
+# inspect_file("./data/processed_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5")
 
 
 
