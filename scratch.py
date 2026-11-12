@@ -6,7 +6,8 @@ import pandas as pd
 import xarray as xr
 import os
 import glob
-from utils import sequence_number, time2dateTime, strain2phase, load_processedData, get_DAS_PSD, get_DAS_PSD_burst, compute_bulk_statistics, integrate_spectrum, smooth_spectrum
+from utils import sequence_number, time2dateTime, strain2phase, load_processedData, get_DAS_PSD, get_DAS_PSD_burst, compute_bulk_statistics, integrate_spectrum, smooth_1D_spectrum, \
+    read_mat
 import re
 from FRF_DAS_plots import waterFall
 from scipy.signal import welch
@@ -20,9 +21,17 @@ import scipy
 from tqdm import tqdm
 from scipy.interpolate import interp1d, LinearNDInterpolator
 import shutil
+from config import DASConfig
+import exifread
+import cv2
+import pickle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 
 from geoprocess import ncsp2FRF, FRFcoord
 
+
+config = DASConfig()
 
 def rebin_psd(f_src, S_src, f_tgt):
     """Conservative rebin of a PSD onto target bins centered at f_tgt.
@@ -201,6 +210,126 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
     freqs, PSD = welch(phase[:, channel], fs=sampling_frequency, nperseg=nperseg, noverlap=noverlap)
 
     return freqs, PSD
+
+
+def return_metadata(imagepath:str):
+
+    # Return metadata from an image file
+    with open(imagepath, 'rb') as f:
+        tags = exifread.process_file(f)
+
+        # # Local Rectified (tags 0-16,44)
+        # print('Station: ' + str(tags.get('EXIF Tag 0xD000', 'notForThisImageType')))
+        # print('Product: ' + str(tags.get('EXIF Tag 0xD001', 'notForThisImageType')))
+        # print('TimeGMT: ' + str(tags.get('EXIF Tag 0xD002', 'notForThisImageType')))
+        # print('Units: ' + str(tags.get('EXIF Tag 0xD003', 'notForThisImageType')))
+        print('LocalLimX: ' + str(tags.get('EXIF Tag 0xD004', 'notForThisImageType')))
+        print('LocalLimY: ' + str(tags.get('EXIF Tag 0xD005', 'notForThisImageType')))
+        # print('PixResolution: ' + str(tags.get('EXIF Tag 0xD006', 'notForThisImageType')))
+        print('LocalOriginWorldX: ' + str(tags.get('EXIF Tag 0xD007', 'notForThisImageType')))
+        print('LocalOriginWorldY: ' + str(tags.get('EXIF Tag 0xD008', 'notForThisImageType')))
+        print('LocalAngle: ' + str(tags.get('EXIF Tag 0xD009', 'notForThisImageType')))
+        print('WorldCoordSysH_epsg: ' + str(tags.get('EXIF Tag 0xD010', 'notForThisImageType')))
+        # print('WaterLevel: ' + str(tags.get('EXIF Tag 0xD011', 'notForThisImageType')))
+        # print('WaterLevelSource: ' + str(tags.get('EXIF Tag 0xD012', 'notForThisImageType')))
+        # print('WorldCoordSysV_epsg: ' + str(tags.get('EXIF Tag 0xD013', 'notForThisImageType')))
+        # print('GridFile: ' + str(tags.get('EXIF Tag 0xD014', 'notForThisImageType')))
+        # print('ExtrinsicFiles: ' + str(tags.get('EXIF Tag 0xD015', 'notForThisImageType')))
+        # print('DateProcessed: ' + str(tags.get('EXIF Tag 0xD016', 'notForThisImageType')))
+        # print('TidalStage: ' + str(tags.get('EXIF Tag 0xD044', 'notForThisImageType')))
+
+        # Geo Rectified (tags 0-3,6-16, 42-43)
+        # print('WorldLimX: ' + str(tags.get('EXIF Tag 0xD043', 'notForThisImageType')))
+        WorldLimX = str(tags.get('EXIF Tag 0xD043', 'notForThisImageType'))
+        # print('WorldLimY: ' + str(tags.get('EXIF Tag 0xD042', 'notForThisImageType')))
+        WorldLimY = str(tags.get('EXIF Tag 0xD042', 'notForThisImageType'))
+
+        #FRF local
+        LocalLimX = str(tags.get('EXIF Tag 0xD004', 'notForThisImageType'))
+        LocalLimY = str(tags.get('EXIF Tag 0xD005', 'notForThisImageType'))
+
+        # # Oblique  (tags 0-3,7-13,15-41)
+        # print('Camera: ' + str(tags.get('EXIF Tag 0xD017', 'notForThisImageType')))
+        # print('ExtrinsicsWorld: ' + str(tags.get('EXIF Tag 0xD018', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD019', 'nan')) + str(tags.get('EXIF Tag 0xD020', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD022', 'nan')) + str(tags.get('EXIF Tag 0xD023', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD024', 'nan')))
+        # print('ExtrinsicsLocal: ' + str(tags.get('EXIF Tag 0xD025', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD026', 'nan')) + str(tags.get('EXIF Tag 0xD027', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD028', 'nan')) + str(tags.get('EXIF Tag 0xD029', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD030', 'nan')))
+        # print('Intrinsics: ' + str(tags.get('EXIF Tag 0xD031', 'nan')) + str(tags.get('EXIF Tag 0xD032', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD033', 'nan')) + str(tags.get('EXIF Tag 0xD034', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD035', 'nan')) + str(tags.get('EXIF Tag 0xD036', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD037', 'nan')) + str(tags.get('EXIF Tag 0xD038', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD039', 'nan')) + str(tags.get('EXIF Tag 0xD040', 'nan')) + str(
+        #     tags.get('EXIF Tag 0xD041', 'nan')))
+
+
+        return WorldLimX, WorldLimY, LocalLimX, LocalLimY
+
+
+def build_DAS_grid(mat_path, save_path):
+    '''build the das xyz grid from the new geolocated DAS locations created by Rob'''
+
+    mat_data = scipy.io.loadmat(str(mat_path), struct_as_record=False, squeeze_me=True)['DAS']
+
+    x1_leg, x2_leg = mat_data.x1, mat_data.x2  #outward leg data
+    y1_leg, y2_leg = mat_data.y1, mat_data.y2  #return leg data
+
+    midpoint = mat_data.midPoint  #location of cable splice/turn - channel location - looks like a gap near here - data skip
+
+    #x1 leg data
+    x1_x = x1_leg.x #frf local x locaitons
+    x1_y = x1_leg.y #frf local y locations
+    x1_chnls = x1_leg.chnls  #channel numbers
+    x1_z = x1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+    #x2 leg data
+    x2_x = x2_leg.x #frf local x locaitons
+    x2_y = x2_leg.y #frf local y locations
+    x2_chnls = x2_leg.chnls  #channel numbers
+    x2_z = x2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+    #y1 leg data
+    y1_x = y1_leg.x #frf local x locaitons
+    y1_y = y1_leg.y #frf local y locations
+    y1_chnls = y1_leg.chnls  #channel numbers
+    y1_z = y1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+    #y2 leg data
+    y2_x = y2_leg.x #frf local x locaitons
+    y2_y = y2_leg.y #frf local y locations
+    y2_chnls = y2_leg.chnls  #channel numbers
+    y2_z = y2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+    #define an array of indices used to determine the start and end index of a leg
+    x1_ind = np.arange(0, len(x1_x), 1)
+    y1_ind = np.arange(len(x1_x), len(x1_x) + len(y1_x), 1)
+    y2_ind = np.arange(len(x1_x) + len(y1_x), len(x1_x) + len(y1_x) + len(y2_x), 1)
+    x2_ind = np.arange(len(x1_x) + len(y1_x) + len(y2_x), len(x1_x) + len(y1_x) + len(y2_x) + len(x2_x), 1)
+
+    xs = np.concatenate([x1_x, y1_x, y2_x[::-1], x2_x[::-1]]) #all x coords
+    ys = np.concatenate([x1_y, y1_y, y2_y[::-1], x2_y[::-1]]) # all y coords
+    zs = np.concatenate([x1_z, y1_z, y2_z[::-1], x2_z[::-1]]) #all z coords
+    chnls = np.concatenate([x1_chnls, y1_chnls, y2_chnls[::-1], x2_chnls[::-1]]) #all channel numbers
+
+    save_dict = {
+        'xs': xs,
+        'ys': ys,
+        'zs': zs,
+        'chnls': chnls,
+        'midpoint': midpoint,
+        'x1_ind': x1_ind,
+        'y1_ind': y1_ind,
+        'y2_ind': y2_ind,
+        'x2_ind': x2_ind
+    }
+
+    #save as pickle
+    with open(save_path, 'wb') as f:
+        pickle.dump(save_dict, f)
+
 
 
 '''CALIBRATION COEFFICIENT original version'''
@@ -2294,7 +2423,6 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 
 
-
 '''FIND WHICH CHANNEL THE DAS TURNS TO ALONGSHORE'''
 # sample_file = './data/for_OSU_processed/20260606/Processed_data_2026_06_06_13_00_01.h5'
 # strain, time = load_processedData(sample_file)
@@ -2931,10 +3059,462 @@ def get_DAS_PSD_channel(file_path, channel, nperseg, noverlap=None, sampling_fre
 
 
 
+'''1D AWAC SPECTRUM V 2D AWAC SPECTRUM CHECK'''
+# config = DASConfig()
+# AWAC1_path = config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+#
+# awac_data = xr.open_dataset(AWAC1_path)
+#
+# spectrum_1D = awac_data['waveEnergyDensity']
+# spectrum_2D = awac_data['directionalWaveEnergyDensity']
+#
+# freqs_1D= spectrum_1D.coords['waveFrequency'].values  # frequency bins - 0.04 - 0.4975 Hz
+# time_1D = spectrum_1D.coords['time'].values  # 719 time steps over the entire month collect - one 34 minute burst per hour
+#
+# freqs_2D = spectrum_2D.coords['waveFrequency'].values
+# dirs_2D = spectrum_2D.coords['waveDirectionBins'].values
+# time_2D = spectrum_2D.coords['time'].values
+#
+# int_2D_spec = integrate_spectrum(spectrum_2D, dirs_2D, axis=-1, integrate_over='direction')
+# total_var_2D = integrate_spectrum(int_2D_spec, freqs_2D, axis=-1, integrate_over='frequency')
+#
+# total_var_1D = integrate_spectrum(spectrum_1D, freqs_1D, axis=-1, integrate_over='frequency')
+#
+# residual = total_var_1D - total_var_2D
+#
+# fig = plt.figure(figsize=(10, 8))
+# ax = fig.add_subplot(111)
+# ax.scatter(time_1D, residual, color='red')
+# ax.set_xlabel('time')
+# ax.set_ylabel('residual')
+# ax.set_title('Total variance residual - 1D v 2D spectrum')
+#
+#
+# plt.tight_layout()
+# plt.savefig(config.figure_directory / 'awac_spectrum_residual.png')
+# plt.show()
+# plt.close('all')
+
+# print(f'Total Variance 1D: {total_var_1D:.4f}')
+# print(f'Total Variance 2D: {total_var_2D:.4f}')
+
+#spectral shape check
+# time_idx = 500
+#
+# fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+#
+# axes[0].plot(freqs_1D, spectrum_1D[time_idx, :], label='1D Spectrum', color='blue')
+# axes[0].set_title('1D Wave Spectrum', fontsize=14)
+# axes[0].set_xlabel('Frequency (Hz)')
+# axes[0].set_ylabel('Energy Density (m^2/Hz)')
+#
+# axes[1].plot(freqs_2D, int_2D_spec[time_idx, :], label='2D Spectrum', color='orange')
+# axes[1].set_title('2D Wave Spectrum (Integrated over Direction)', fontsize=14)
+# axes[1].set_xlabel('Frequency (Hz)')
+# axes[1].set_ylabel('Energy Density (m^2/Hz)')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/wave_information/1D_2D_spectral_shape.png')
+# plt.show()
+# plt.close('all')
+
+
+'''P OR AST CHECK FOR AWAC'''
+# #1 means pressure is used to derive waveEnergyDensity and related parameters
+# #2 means acoustic surface tracking is used to derive waveEnergyDensity and related parameters
+# config = DASConfig()
+# AWAC1_path = config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+#
+# awac_data = xr.open_dataset(AWAC1_path)
+#
+# info = awac_data['PorAST']
+# p = info.values
+# time = info.coords['time'].values
+#
+# start_clip = np.datetime64(datetime(2026, 6, 1, 0, 0, 0))
+# end_clip = np.datetime64(datetime(2026, 6, 15, 0, 0, 0))
+#
+# clip_p = p[(time >= start_clip) & (time <= end_clip)]
+# clip_time = time[(time >= start_clip) & (time <= end_clip)]
+#
+# figure = plt.figure(figsize=(12, 8))
+# ax = figure.add_subplot(111)
+#
+# ax.scatter(clip_time, clip_p, color='blue')
+# ax.axhline(y=1.5, color='red', linestyle='--')
+# ax.set_ylim(0.75, 2.15)
+# ax.text(0.5, 0.25, 'Pressure = 1', transform=ax.transAxes, ha='center')
+# ax.text(0.5, 0.75, 'AST = 2', transform=ax.transAxes, ha='center')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/wave_information/PorAST.png')
+# plt.show()
+# plt.close('all')
 
 
 
+'''MAT FILE READER'''
+# config = DASConfig()
+#
+# mat_path = config.data_directory / 'frf_awac/DAS2026BestChannelPositionsAsOf091826UseMe.mat'
+#
+# # mat_contents = scipy.io.loadmat(str(mat_path), squeeze_me=True, struct_as_record=True) #load the mat file from the path
+#
+# def read_mat(mat_path):
+#     '''Recursively print the contents of a .mat file, including nested structures and lists.
+#     This would likely work for more file types than just .mat - based on the hdf5 and json recursive readers'''
+#     def print_mat(obj, indent=0):
+#         prefix = "   " * indent  #prefix before each object in the print statement - indented to show the nesting of the data structure
+#
+#         if isinstance(obj, dict):  #if the object is a dictionary, iterate through its items
+#             for key, value in obj.items():  #pull the key value pairs
+#
+#                 if key.startswith('_'):  #skip keys that start with an underscore - matlab metadata
+#                     continue
+#
+#                 print(f'{prefix}{key}:')  #print the key
+#                 print_mat(value, indent+1) # recursively call the function to print the contents of the nested structure inside the dict/list
+#
+#         elif isinstance(obj, np.ndarray) and obj.dtype.names is not None:  # if the value is a matlab structure or structured array
+#             for name in obj.dtype.names:
+#                 value = obj[name]  # get the value of the field
+#                 print(f"{prefix}{name}:")  # print the name of the field
+#                 print_mat(value, indent + 1)  # recursively call the function to print the contents of the nested structure inside the field
+#
+#         elif isinstance(obj, np.ndarray): #check if the object is a numpy array
+#
+#             if obj.ndim == 0: #check if the array is 0-dimensional
+#                 value = obj.item() #extract the underlying object
+#
+#                 if isinstance(value, np.ndarray): #check if the object is a numpy array of numpy arrays
+#                     print_mat(value, indent + 1) #recursively call the function to print the contents of the nested structure inside the array
+#                 elif isinstance(value, str): #check if the object is a string
+#                     print(f"{prefix}Values: {value}") #print the string value
+#
+#                 return
+#
+#             print(f"{prefix}Type: {type(obj).__name__}") #print the type of the object
+#             print(f"{prefix}Shape: {obj.shape}") #print the shape of the object
+#             print(f"{prefix}Dtype: {obj.dtype}") #print the data type of the object
+#
+#         elif isinstance(obj, (list, tuple)): # check if the object is a list or tuple
+#             for i, item in enumerate(obj):
+#                 if item.startswith('_'):
+#                     continue
+#                 print(f"{prefix}[{i}]:")  # print the index of the item
+#                 print_mat(item, indent + 1)  # recursively call the function to print the contents of the nested structure inside the list/tuple
+#
+#         else: #everything else
+#             print(f"{prefix}Type: {type(obj).__name__}")  # print the type of the object
+#             print(F"{prefix}Value: {obj}")  # print the value of the object
+#
+#
+#     mat_contents = scipy.io.loadmat(str(mat_path), squeeze_me=True, struct_as_record=True) #load the mat file from the path
+#     print_mat(mat_contents) #call the print_mat function to print all contents inside the file
+#
+# read_mat(mat_path)
 
 
+
+'''NEW .NC FILE'''
+# config = DASConfig()
+# data_path = config.data_directory / 'frf_awac/S104015A001_2A17WEcho_4.nc'
+# data = xr.open_dataset(data_path)
+# time = data['time'].values
+#
+# #data seems to be recorded every two hours.
+#
+# # start_clip = np.datetime64(datetime(2026, 6, 1, 0, 0, 0))
+# # end_clip = np.datetime64(datetime(2026, 6, 15, 0, 0, 0))
+#
+# #---PorAST CHECK---
+# # PorAST_info = data['PorAST']
+# # PorAST = PorAST_info.values
+# # ptime = PorAST_info.coords['time'].values
+#
+# # figure = plt.figure(figsize=(12, 8))
+# # ax = figure.add_subplot(111)
+# #
+# # ax.scatter(time, PorAST, color='blue')
+# # ax.axhline(y=1.5, color='red', linestyle='--')
+# # ax.set_ylim(0.75, 2.15)
+# # ax.text(0.5, 0.25, 'Pressure = 1', transform=ax.transAxes, ha='center')
+# # ax.text(0.5, 0.75, 'AST = 2', transform=ax.transAxes, ha='center')
+# #
+# # plt.tight_layout()
+# # plt.savefig('./figures/wave_information/PorAST_10_3-5.png')
+# # plt.show()
+# # plt.close('all')
+#
+#
+# #---INTEGRATE 2D AND 1D WAVE SPECTRA---
+# _2d_info = data['directionalWaveEnergyDensity']
+# _1d_info = data['waveEnergyDensity']
+#
+# spec_2D = _2d_info.values
+# spec_1D = _1d_info.values
+#
+# f_bins_2d = _2d_info.coords['waveFrequency'].values
+# d_bins_2d = _2d_info.coords['waveDirectionBins'].values
+#
+# f_bins_1d = _1d_info.coords['waveFrequency'].values
+#
+# int_2d = integrate_spectrum(spec_2D, d_bins_2d, axis=-1, integrate_over='direction')
+# var_2d = integrate_spectrum(int_2d, f_bins_2d, axis=-1, integrate_over='frequency')
+# var_1d = integrate_spectrum(spec_1D, f_bins_1d, axis=-1, integrate_over='frequency')
+#
+# residual = var_1d - var_2d
+#
+# # figure = plt.figure(figsize=(12, 8))
+# # ax = figure.add_subplot(111)
+# #
+# # ax.scatter(time, residual, color='blue')
+# # ax.set_title('2D v 1D total variance residual', fontsize=16)
+# # ax.set_ylabel('Residual (m^2)', fontsize=14)
+# # ax.set_xlabel('Time', fontsize=14)
+# # ax.set_ylim(-1, 1)
+# #
+# # plt.tight_layout()
+# # plt.savefig('./figures/wave_information/2D_1D_variance_residual_10_3-5.png')
+# # plt.show()
+# # plt.close('all')
+#
+# #plot of spectral shape of 1D and 2D spectra at a specific time index
+# time_idx = -5
+#
+# fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+#
+# axes[0].plot(f_bins_1d, spec_1D[time_idx, :], label='1D Spectrum', color='blue')
+# axes[0].set_title('1D Wave Spectrum', fontsize=14)
+# axes[0].set_xlabel('Frequency (Hz)')
+# axes[0].set_ylabel('Energy Density (m^2/Hz)')
+#
+# axes[1].plot(f_bins_2d, int_2d[time_idx, :], label='2D Spectrum', color='orange')
+# axes[1].set_title('2D Wave Spectrum (Integrated over Direction)', fontsize=14)
+# axes[1].set_xlabel('Frequency (Hz)')
+# axes[1].set_ylabel('Energy Density (m^2/Hz)')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/wave_information/1D_2D_spectral_shape_10_3-5.png')
+# plt.show()
+# plt.close('all')
+#
+#
+# #print qcflagE and qcflagD - quality control flags for both Energy density and spectral directional estimate
+# # 1 - passed, 2 - not set, 3 - questionable, 4 - failed
+# # fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+# #
+# # axes[0].plot(time, data['qcFlagE'].values, label='Energy QC Flag', color='blue')
+# # axes[0].set_xlabel('Time')
+# # axes[0].set_ylabel('QC Flag Value')
+# # axes[0].set_title('Energy QC Flag Over Time', fontsize=14)
+# #
+# # axes[1].plot(time, data['qcFlagD'].values, label='Directional QC Flag', color='orange')
+# # axes[1].set_xlabel('Time')
+# # axes[1].set_ylabel('QC Flag Value')
+# # axes[1].set_title('Direction QC Flag Over Time', fontsize=14)
+# #
+# # plt.tight_layout()
+# # plt.savefig('./figures/wave_information/qc_flags_energy_directional_10_3-5.png')
+# # plt.show()
+# # plt.close('all')
+#
+# #spectrogram of collected 1D spectra
+# fig = plt.figure(figsize=(12, 8))
+# ax = fig.add_subplot(111)
+#
+# pcm = ax.pcolormesh(time, f_bins_1d, spec_1D.T, shading='auto', cmap='viridis')
+# ax.set_xlabel('Time')
+# ax.set_ylabel('Frequency (Hz)')
+# ax.set_title('1D Wave Spectrogram', fontsize=16)
+#
+# cbar = plt.colorbar(pcm, ax=ax)
+# cbar.set_label("Energy Density (m²/Hz)")
+#
+# plt.tight_layout()
+# plt.savefig('./figures/wave_information/1D_wave_spectrogram_10_3-5.png')
+# plt.show()
+# plt.close('all')
+
+#sig2frf_waves_nc.m - script used to create the nc file - from data.history
+
+
+'''ROBS GEOLOCATED DAS FILE + ARGUS IMAGE'''
+# config = DASConfig()
+
+mat_path = config.data_directory / 'frf_awac/DAS2026BestChannelPositionsAsOf091826UseMe.mat'
+# read_mat(mat_path) #recursively print everything in the mat file
+
+mat_data = scipy.io.loadmat(str(mat_path), struct_as_record=False, squeeze_me=True)['DAS']
+
+#emsemble averaged DAS locations - many trials of geolocation averaged into one location (identical copies of a system - tested - and results averaged into a mean)
+# x1, y1 are the out legs, x2, y2 are the return legs
+# Chnls - are the corresponding das channels to the x/y locations
+#  xRaw, yRaw, sigXRaw, sigYRaw are unsmoothed estimates of the x, y locations of channels
+# Ngood is the number of valid ensembles for each x, y - NgoodRaw is the unsmoothed estimates
+# z is the estimated depth location of the DAS cable
+#  MidPoint is the cable end turning point channel (splicing location).
+# TimesUsedHr1 are datenums of each run for first ensemble.
+# HrOffSets are the offsets from Hour1 time for ensembles.
+# BaseFilename is the root filename of intersection data.
+# Vertical bathy and burial as of last CRAB survey "burialEndDate",  includes likely cable depth "zCable" and bathy "zBathy" as  well as burial depth "burial".  These are saved for the full
+# cable as well as for each of the four legs under the assumption that the cable will sink to the bottom of the profile envelope.
+
+x1_leg, x2_leg = mat_data.x1, mat_data.x2  #outward leg data
+y1_leg, y2_leg = mat_data.y1, mat_data.y2  #return leg data
+
+midpoint = mat_data.midPoint  #location of cable splice/turn - channel location - looks like a gap near here - data skip
+
+#x1 leg data
+x1_x = x1_leg.x #frf local x locaitons
+x1_y = x1_leg.y #frf local y locations
+x1_chnls = x1_leg.chnls  #channel numbers
+x1_z = x1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+#x2 leg data
+x2_x = x2_leg.x #frf local x locaitons
+x2_y = x2_leg.y #frf local y locations
+x2_chnls = x2_leg.chnls  #channel numbers
+x2_z = x2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+#y1 leg data
+y1_x = y1_leg.x #frf local x locaitons
+y1_y = y1_leg.y #frf local y locations
+y1_chnls = y1_leg.chnls  #channel numbers
+y1_z = y1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+#y2 leg data
+y2_x = y2_leg.x #frf local x locaitons
+y2_y = y2_leg.y #frf local y locations
+y2_chnls = y2_leg.chnls  #channel numbers
+y2_z = y2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+
+xs = np.concatenate([x1_x, y1_x, y2_x[::-1], x2_x[::-1]]) #all x coords
+ys = np.concatenate([x1_y, y1_y, y2_y[::-1], x2_y[::-1]]) # all y coords
+zs = np.concatenate([x1_z, y1_z, y2_z[::-1], x2_z[::-1]]) #all z coords
+chnls = np.concatenate([x1_chnls, y1_chnls, y2_chnls[::-1], x2_chnls[::-1]]) #all channel numbers
+#
+#--- ARGUS ---
+local_image_path = config.root / 'DAS_Deploy/20250730T150000Z.FrfTower.cx.snap.jpg'
+_, _, local_x, local_y = return_metadata(str(local_image_path))
+extent = (float(local_x.split()[0]), float(local_x.split()[1]), float(local_y.split()[0]), float(local_y.split()[1]))
+image = cv2.cvtColor(cv2.imread(local_image_path), cv2.COLOR_BGR2RGB)
+
+#--- AWACS ---
+file_paths = {
+    600:config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-600_202606.nc',
+    300:config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+}
+
+results = {}
+
+for awac, file_path in file_paths.items():
+
+    data = xr.open_dataset(file_path)
+    long = data['longitude'].values
+    lat = data['latitude'].values
+    #convert lat lon to FRFlocal
+    dict = FRFcoord(long, lat, coordType='LL')
+    xfrf = dict['xFRF'] #x coordinate of awac location
+    yfrf = dict['yFRF'] #y coordinate of awac location
+    results[awac] = {'xFRF': xfrf, 'yFRF': yfrf}
+
+
+#---PLOT---
+fig, axes = plt.subplots(1, 1, figsize=(8, 15))
+
+sc = axes.scatter(xs, ys, c=zs, cmap='viridis_r', s=3)
+axes.scatter(results[600]['xFRF'], results[600]['yFRF'], c='b', s=150, marker='*', label='AWAC xFRF=600m')
+axes.scatter(results[300]['xFRF'], results[300]['yFRF'], c='r', s=150, marker='*', label='AWAC xFRF=300m')
+axes.imshow(image, extent=extent)
+axes.set_xlabel('xFRF (m)')
+axes.set_ylabel('yFRF (m)')
+axes.set_xlim(0, xs.max() + 50)
+axes.legend(loc='upper right', fontsize=10)
+
+cbar = plt.colorbar(sc, ax=axes)
+cbar.set_label('Cable Depth (m)')
+
+plt.tight_layout()
+plt.savefig('./figures/robs_geolocated_das_file.png')
+plt.show()
+plt.close('all')
+
+
+'''CABLE ORIENTATION USING ROBS DAS LOCATIONS'''
+# mat_path = config.data_directory / 'frf_awac/DAS2026BestChannelPositionsAsOf091826UseMe.mat'
+# # read_mat(mat_path) #recursively print everything in the mat file
+#
+# save_path = config.data_directory / 'frf_awac/new_DAS_XYZgrid.pkl'
+#
+# build_DAS_grid(mat_path, save_path) #build the new DAS grid
+#
+# half_window = 2
+# #load new DAS grid - determine orientation for each point
+# das_grid = np.load(save_path, allow_pickle=True)
+#
+# def get_channel_orientation(das_grid, half_window=5):
+#
+#     '''get the orientation of the channels relative to shore normal - 71.8535 degrees relative to true North'''
+#     xs = das_grid['xs'] #all x coords
+#     ys = das_grid['ys'] # all y coords
+#     n = len(xs) # number of channels
+#
+#     orientation = np.zeros(n) #initialize orientation array
+#     for ind in range(n): #loop through channel locations and indices
+#         low = max(ind - half_window, 0) #low index of the window
+#         high = min(ind + half_window, len(xs) - 1) # high index of the window
+#
+#         pts = np.column_stack([xs[low:high + 1], ys[low:high + 1]]) #get the points in the window
+#         pts = pts - pts.mean(axis=0) #center the points around the mean - shape: (half_window, 2)
+#
+#         _, _, vt = np.linalg.svd(pts, full_matrices=False) #given a point cloud (pts), find the axes of the cloud.
+#         vx, vy = vt[0] #vt[0] is the direction along which the cloud is the longest (highest variance). This is the direction of the cable in the window. vx, vy are the x and y component vectors.
+#         #the line through the centroid along vt[0] minimizes the sum of squared perpendicular distances from the points to the line.
+#         #returns of s[0] and s[1] can be used to find window size. S[1] / S[0] will be near zero for a straight line. S is proportional to how spread out the points are along the axes.
+#
+#         orientation_deg = np.degrees(np.arctan2(-vy, vx)) #orientation in degrees - relative to shore normal  #TODO: wrap this between 0 - 90 - the actual direction is not important just relative angle to shore normal
+#         orientation_wrapped = (orientation_deg + 90) % 180 - 90
+#         orientation[ind] = orientation_wrapped
+#     return orientation
+#
+# orientation = get_channel_orientation(das_grid, half_window)
+# # orientation = np.abs(orientation) #- config.FRF_orientation
+# #plot the orientation of the cable
+# fig = plt.figure(figsize=(8, 8))
+#
+# axes = fig.add_subplot(1, 1, 1)
+# sc = axes.scatter(das_grid['xs'], das_grid['ys'], c=orientation, cmap='bwr_r', vmin=-90, vmax=90, s=3)
+# # axes.set_ylim(600, 1200)
+# # axes.set_xlim(0, 850)
+# axes.set_aspect('equal')
+# axes.set_facecolor('grey')
+# axes.set_xlabel('xFRF (m)')
+# axes.set_ylabel('yFRF (m)')
+# axes.set_title('DAS channel orientation relative to shore normal')
+#
+# # axes1 = fig.add_subplot(2, 1, 2, polar=True)  #COLORWHEEL - SAVE FOR LATER USE
+# # r = np.linspace(0.3, 1, 100)          # Controls inner radius (donut hole) and outer limit
+# # theta = np.linspace(0, 2 * np.pi, 200)  # full 360 degrees rotation
+# # R, Theta = np.meshgrid(r, theta)
+# # mesh = axes1.pcolormesh(Theta, R, Theta, cmap='hsv', shading='auto') #colorwheel
+# #
+# # axes1.set_yticklabels([])  # Hide radial ticks
+# # axes1.grid(False)          # Turn off gridlines
+# # axes1.spines['polar'].set_visible(False)  # Remove the outer border ring
+#
+# divider = make_axes_locatable(axes)
+# cax = divider.append_axes("right", size="5%", pad=0.1)
+# fig.colorbar(sc, cax=cax, label='Cable Orientation from Shore Normal (deg)')
+#
+# plt.tight_layout()
+# plt.savefig(config.figure_directory / 'DAS_cable_orientation.png')
+# plt.show()
+# plt.close('all')
+#
+# # [das_grid['x1_ind']]
+
+#TODO: if an x location in the half window is greater than x1_x[-1], use a one sided window, Once the desired point is greater than x1_x[-1], go back to using a centered half window
+# for edges use a one sided window until there is enough points for a half window
 
 

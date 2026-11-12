@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, sosfiltfilt
-from scipy.ndimage import uniform_filter1d
+from scipy.ndimage import uniform_filter1d, gaussian_filter1d
 from datetime import datetime, timezone
 import os
 import h5py
@@ -28,7 +28,8 @@ def plot_timeSeries(data, channel:int):
     plt.close('all')
 
 
-def process_worker(i, all_files, savefolder, gauge_length=1.6, sampling_frequency=500, temporal_window=10, downsample=False, cutoff_frequency=1, downsample_frequency=2, multi_save=True):
+def process_worker(i, all_files, savefolder, gauge_length=1.6, sampling_frequency=500, temporal_window=10,
+                   downsample=False, low_cutoff_frequency=1, high_cutoff_frequency=0.05, downsample_frequency=2, multi_save=True):
 
     processor = None
 
@@ -72,7 +73,8 @@ def process_worker(i, all_files, savefolder, gauge_length=1.6, sampling_frequenc
             start_clip,
             stop_clip,
             downsample=downsample,
-            cutoff_frequency=cutoff_frequency,
+            low_cutoff_frequency=low_cutoff_frequency,
+            high_cutoff_frequency=high_cutoff_frequency,
             downsample_frequency=downsample_frequency,
             multi_save=multi_save,
         )
@@ -112,7 +114,7 @@ class DASProcessor:
         self.time_ds = None  # time_dataset, will hold the resizable time dataset once initialized
         self.f = None
 
-    def process_file(self, rawData, unix_time, start_clip, stop_clip, downsample=True, cutoff_frequency=5, downsample_frequency=2, multi_save=True):
+    def process_file(self, rawData, unix_time, start_clip, stop_clip, downsample=True, low_cutoff_frequency=1, high_cutoff_frequency=0.05, downsample_frequency=2, multi_save=True):
 
         #antialiasing check - make sure the cutoff frequency is less than half the downsample frequency to avoid aliasing
         # assert cutoff_frequency < 0.5 * downsample_frequency, "Cutoff frequency must be less than half the downsample frequency to avoid aliasing."  #FIXME: uncomment me
@@ -121,9 +123,9 @@ class DASProcessor:
         time_seconds = unix_time / 1e6  # unix time stamp is stored in microseconds - convert to seconds
 
         #run data through processing pipeline
-        rawStrain = phase2strain(rawData, self.gauge_length)  # convert phase shifts to strain using hartog, 2017 linear method
+        # rawStrain = phase2strain(rawData, self.gauge_length)  # convert phase shifts to strain using hartog, 2017 linear method --> this is outdated - keep in phase shifts
 
-        n_channels = rawStrain.shape[1]
+        n_channels = rawData.shape[1]
         if multi_save: #if saving multiple small files, initialize a new hdf5 file
             start_datetime = time2dateTime(time_seconds[start_clip])  # convert the start time to a datetime object
             self.f = h5py.File(self.save_path + start_datetime.strftime("%Y_%m_%d_%H_%M_%S") + '.h5', "w") # open (create/overwrite) the output HDF5 file for incremental writing
@@ -134,13 +136,14 @@ class DASProcessor:
                 self.f = h5py.File(self.save_path + 'all_files' + '.h5', "w") # open (create/overwrite) the output HDF5 file for incremental writing
                 self._init_h5(n_channels)
 
-        strain_temporal_detrend = self.temporal_detrend(rawStrain)  # temporal detrend with a 10-minute moving window (in each isolated channel)
+        # strain_temporal_detrend = self.temporal_detrend(rawData)  # temporal detrend with a 10-minute moving window (in each isolated channel)
+        strain_temporal_detrend = self.high_pass_filter(rawData, cutoff_frequency=high_cutoff_frequency) #detrend with a high pass filter -
 
         strain_common_mode_removed = self.common_mode_removal(strain_temporal_detrend)  # common - mode removal (spatial detrend)
 
         if downsample:
             #lowpass filter the data
-            strain_low_pass_filtered = self.low_pass_filter(strain_common_mode_removed, cutoff_frequency=cutoff_frequency)  # low pass filter to remove high frequency noise
+            strain_low_pass_filtered = self.low_pass_filter(strain_common_mode_removed, cutoff_frequency=low_cutoff_frequency)  # low pass filter to remove high frequency noise
 
             strain_low_pass_filtered = strain_low_pass_filtered[start_clip:stop_clip]  #clip strain and time arrays to isolate the original file we wanted to process
             time_seconds = time_seconds[start_clip:stop_clip] #pull the matching timestamps
@@ -162,9 +165,16 @@ class DASProcessor:
         # - this should remove any low frequency noise (temperature, laser drift, etc.) and leave the wave band
         # - done within each channel (ex: thermal expansion of a particular segment of the fiber)
 
-        baseline = uniform_filter1d(rawStrain, size=self.window_samples, axis=0, mode='nearest')
+        baseline = uniform_filter1d(rawStrain, size=self.window_samples, axis=0, mode='nearest') #boxcar average to get the baseline strain for each channel over the temporal window
 
         return rawStrain - baseline
+
+    def high_pass_filter(self, signal, cutoff_frequency, butter_order=4):
+        #high pass filter the signal to remove low frequency noise present across the dataset
+        sos = butter(butter_order, cutoff_frequency, btype='highpass', fs=self.sampling_frequency, analog=False, output='sos')
+        filtered_signal = sosfiltfilt(sos, signal, axis=0)
+
+        return filtered_signal
 
     def common_mode_removal(self, strain_temporal_detrend):
 
@@ -180,7 +190,6 @@ class DASProcessor:
 
         # 3: low pass filter to remove high frequency noise
         # make sure to low pass filter at least close to the nyquist frequency, there is likely almost no energy between 1 - ~5Hz that could alias
-
         b, a = butter(butter_order, cutoff_frequency, btype='lowpass', fs=self.sampling_frequency, analog=False, output='ba') #returns numerator and denominator coefficients of the filter transfer function
         # print(len(output))
         # b, a = output[0], output[1] #unpack output
@@ -207,9 +216,9 @@ class DASProcessor:
         return strain_downsampled, time_downsampled
 
     def _init_h5(self, n_ch, chunk_size=5000):
-        #initialize the HDF5 file with datasets for strain and time
+        #initialize the HDF5 file with datasets for signal and time
         self.strain_ds = self.f.create_dataset(   #create a strain dataset in the hdf5 file
-            "strain",  #name of dataset
+            "signal",  #name of dataset
             shape=(0, n_ch), #initial shape
             maxshape=(None, n_ch), #maximum shape - allow for unlimited growth in the time dimension
             dtype=np.float32, #datatype, keep storage light bc DAS data is dense
@@ -257,8 +266,8 @@ class DASProcessor:
 
 if __name__ == "__main__":
 
-    datafolder = os.getcwd() + '/data/raw_66/1400_UTC'
-    savefolder = os.getcwd() + '/data/processed_06062026/1400_UTC/'
+    datafolder = os.getcwd() + '/data/new_frf/decimated/2026/10-Oct/20261020'
+    savefolder = os.getcwd() + '/data/new_frf/processed/2026/10-Oct/20261020/'
 
     #define gauge length and sampling frequency
     gauge_length = 1.6 #meters
@@ -305,12 +314,12 @@ if __name__ == "__main__":
         stop_clip = start_clip + n
 
         #process raw strain data
-        processor.process_file(rawData, time, start_clip, stop_clip, downsample=True, cutoff_frequency=5, downsample_frequency=2, multi_save=True)
+        processor.process_file(rawData, time, start_clip, stop_clip, downsample=False, cutoff_frequency=5, downsample_frequency=2, multi_save=False)
 
     processor.close()
 
 
-    #TODO: The functions in process_file consume the most memory with copies of arrays
+    #TODO: The functions in process_file consume the most memory with copies of arrays - bad - fix at some point
 
 
 

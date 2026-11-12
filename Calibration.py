@@ -134,9 +134,10 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
 
     awac_wave_band = (awac_freqs >= config.wave_band_min) & (awac_freqs <= config.wave_band_max)  # wave band to bandpass signal
 
-    # trig for wave refraction
-    theta0_deg_grid = dirs - config.FRF_orientation  # convert measure wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore. direction bins oriented to FRF
+    # trig for wave refraction - AWAC measures wave direction in degrees COMING FROM true north
+    theta0_deg_grid = dirs - config.FRF_orientation  # convert measured wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore. direction bins oriented to FRF
     theta0_deg_grid = (theta0_deg_grid + 180) % 360 - 180  # wrap to -180, 180. #waves propagating in opposite direction of positive x axis. (positive x points offshore, bin 0 is now bin -71.8535)
+    # waves are negative COMING FROM the north and positive when COMING FROM the south
 
     theta0_rad_grid = np.deg2rad(theta0_deg_grid)  # convert to radians: shape of (dirs,) - directional bins in radians - no values inside the bins yet
     cos_theta0 = np.cos(theta0_rad_grid)  # precomputation of cos(theta0)
@@ -150,7 +151,7 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
     refract_dir = (np.abs(theta0_deg_grid[order]) < 80)[None, :]  # (1, ndir) # only consider waves that are within 80 degrees of the shore normal for refraction. avoid singularity in Snells law
     cos1_min = 0.1  # minimum cos(theta1) to avoid singularity in Snell's law. This is a small angle of incidence (theta1 ~ 84 degrees)
 
-    dir_exp = config.directional_weight  # direction exponent  #TODO: is 2 the correct exponent here? -> initial first guess because energy scales as trig_function^2(theta)
+    dir_exp = config.directional_weight  # direction exponent
     D_cross = np.abs(cos_theta0) ** dir_exp  # cross-shore cable: along-axis waves produce the greatest response
     D_along = np.abs(sin_theta0) ** dir_exp  # alongshore cable: waves perpendicular to the cable procduce the smallest response
 
@@ -256,7 +257,7 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
 
                 # allocate the effective spectrum and effective depth for later saving
                 S1_weight_spectrum[ch, :] = S1_weight # store the weighted spectrum for later saving
-                D_weight[ch] = np.nansum(S1_local * D[None, :]) / np.nansum(S1_local) # compute the effective directional weight for this channel and store for later saving
+                D_weight[ch] = np.nansum(S1_local[awac_wave_band, :] * D[None, :]) / np.nansum(S1_local[awac_wave_band, :]) # compute the effective directional weight for this channel and store for later saving
 
                 das_psd_variance = np.trapezoid(das_PSD[awac_wave_band], awac_freqs[awac_wave_band]) # compute the variance of the DAS pressure spectrum over the AWAC wave band
                 awac_psd_variance = np.trapezoid(pressure_spectrum[awac_wave_band], awac_freqs[awac_wave_band]) # compute the variance of the AWAC pressure spectrum over the AWAC wave band
@@ -379,9 +380,6 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
             f'{save_folder}/Calib{b_start.strftime("_%Y-%m-%d_%H_%M_%S")}.npz',
             **save_dict,
         )
-
-
-
 
 
 

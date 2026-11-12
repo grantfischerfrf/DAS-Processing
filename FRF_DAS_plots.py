@@ -1,5 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.colors import LogNorm
 from datetime import datetime, timezone, timedelta
 from scipy.signal import hilbert, find_peaks
 from scipy.ndimage import maximum_filter1d
@@ -11,8 +13,8 @@ import glob
 from tqdm import tqdm
 from scipy.signal import welch, spectrogram
 from utils import clip_by_time, sequence_number, read_dasFile, time2dateTime, load_processedData, get_DAS_PSD_burst, \
-    get_orientation, strain2phase, get_burst_files, get_AWAC_data, smooth_spectrum, integrate_spectrum, compute_bulk_statistics, \
-    rebin_psd
+    get_orientation, strain2phase, get_burst_files, get_AWAC_data, smooth_1D_spectrum, integrate_spectrum, compute_bulk_statistics, \
+    rebin_psd, smooth_2D_spectrum, get_f_k_2D, wavenumber, phase2strain
 from Calibration import wavenumber
 from config import DASConfig
 
@@ -73,7 +75,28 @@ def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=
     plt.close('all')
 
 
-def waterFall(data, time, channel_spacing, channel_start:int, channel_end:int, savepath:str, starttime:datetime=None, endtime:datetime=None):
+def waterFall(das_data_paths, savepath:str, channel_spacing, channel_start:int=None, channel_end:int=None, starttime:datetime=None, endtime:datetime=None):
+
+    if starttime is not None and endtime is not None:
+        das_data_paths = clip_by_time(das_data_paths, starttime, endtime)
+
+    #load all the data from the given file paths
+    data_list = []
+    time_list = []
+    for path in das_data_paths:
+        phase, time = load_processedData(path)  #TODO: quick fix - make this plot data from one file then toss old data - open new file, in the future. add config as arg
+        # phase = phase - np.nanmean(phase, axis=0, keepdims=True)
+        data_list.append(phase)
+        time_list.append(time)
+
+    data = np.concatenate(data_list, axis=0)  # concatenate all the data along the time axis
+    time = np.concatenate(time_list, axis=0)  # concatenate all the time arrays along the time axis
+
+    if channel_start == None and channel_end == None:
+        channel_start = 0
+        channel_end = data.shape[1]
+
+    time = time2dateTime(time)
 
     #plot a waterfall plot of the strain data between starttime and endtime
     fig, ax = plt.subplots(figsize=(10, 8))
@@ -96,9 +119,9 @@ def waterFall(data, time, channel_spacing, channel_start:int, channel_end:int, s
     # ax.set_ylim(600, 1500)
     ax.tick_params(axis='x', rotation=45)
     cbar = plt.colorbar(pcm, ax=ax)
-    cbar.set_label("Strain")
+    cbar.set_label("Phase Shift (rad)")
     plt.tight_layout()
-    plt.savefig(savepath + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '.png')
+    plt.savefig(savepath + '/waterfall/' + time[0].strftime('_%Y_%m_%d_%H_%M_%S') + '_to_' + time[-1].strftime('%Y_%m_%d_%H_%M_%S') + '.png')
     plt.show()
     plt.close('all')
 
@@ -336,7 +359,7 @@ def k_and_amp_timeseries(file_paths, save_path, channel_start:int, channel_end:i
 
         times.append(datetime_array[0])
         amps.append(get_signal_amplitude(microstrain, channel, sampling_frequency))
-        ks.append(get_waveNumber(strain, channel_start, channel_end,
+        ks.append(get_waveNumber(strain, channel_start, channel_end,   #THIS FUNCTION HAS CHANGED
                                  channel_spacing, sampling_frequency))
 
     axes[0].plot(times, amps, color='red', linewidth=1)
@@ -626,8 +649,8 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
     awac_Hs_all, _, _ = compute_bulk_statistics(S_f, S_t, freqs[wave_band], dirs)
 
     #smooth the AWAC spectra
-    S_t = smooth_spectrum(S_t, window=5, filter_type='gaussian', mode='wrap')
-    S_f = smooth_spectrum(S_f, window=5, filter_type='gaussian', mode='wrap')
+    S_t = smooth_1D_spectrum(S_t, window=5, filter_type='gaussian', mode='wrap')
+    S_f = smooth_1D_spectrum(S_f, window=5, filter_type='gaussian', mode='wrap')
 
     #bulk wave statistics of the observed awac data (N_samples/time,)
     _, awac_Tp_all, awac_thetap_all = compute_bulk_statistics(S_f, S_t, freqs[wave_band], dirs) #TODO:issue with frequency band code in utils.py
@@ -678,8 +701,8 @@ def AWAC_modelVobs(awac_data_dir, model_data_dir):
         #compute Hs before smoothing
         model_Hs_all, _, _ = compute_bulk_statistics(model_S_f, model_S_t, freqs[wave_band], dirs)
 
-        model_S_t = smooth_spectrum(model_S_t, window=5, filter_type='gaussian', mode='wrap') #smooth the DAS spectra
-        model_S_f = smooth_spectrum(model_S_f, window=5, filter_type='gaussian', mode='wrap')
+        model_S_t = smooth_1D_spectrum(model_S_t, window=5, filter_type='gaussian', mode='wrap') #smooth the DAS spectra
+        model_S_f = smooth_1D_spectrum(model_S_f, window=5, filter_type='gaussian', mode='wrap')
 
         #sanity check - plot the frequency/direction spectrum of the awac measurement and the model for the same time step
         fig = plt.figure()
@@ -757,8 +780,8 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     Hs300_all, _, _ = compute_bulk_statistics(S300_f, S300_t, freqs300, dirs300, frequency_band=wave_band)
 
     #smooth the AWAC spectra
-    S300_t = smooth_spectrum(S300_t, window=5, filter_type='gaussian', mode='wrap')
-    S300_f = smooth_spectrum(S300_f, window=5, filter_type='gaussian', mode='wrap')
+    S300_t = smooth_1D_spectrum(S300_t, window=5, filter_type='gaussian', mode='wrap')
+    S300_f = smooth_1D_spectrum(S300_f, window=5, filter_type='gaussian', mode='wrap')
 
     #bulk wave statistics of the observed 300m awac data, shape (N_samples/time,)
     _, Tp300_all, thetap300_all = compute_bulk_statistics(S300_f, S300_t, freqs300, dirs300, frequency_band=wave_band)
@@ -771,8 +794,8 @@ def AWAC300_v_AWAC600(awac_data_dir, save_dir, start_time=None, end_time=None):
     Hs600_all, _, _ = compute_bulk_statistics(S600_f, S600_t, freqs600, dirs600, frequency_band=wave_band)
 
     #smooth the AWAC spectra
-    S600_t = smooth_spectrum(S600_t, window=5, filter_type='gaussian', mode='wrap')
-    S600_f = smooth_spectrum(S600_f, window=5, filter_type='gaussian', mode='wrap')
+    S600_t = smooth_1D_spectrum(S600_t, window=5, filter_type='gaussian', mode='wrap')
+    S600_f = smooth_1D_spectrum(S600_f, window=5, filter_type='gaussian', mode='wrap')
 
     # #sanity plot - awac300 v awac 600 frequency spectrum
     # count = 0
@@ -1147,20 +1170,21 @@ def C_f_v_direction(model_data_dir, save_dir, channel):
     c_all = []  # empty array for calibration coefficients
     time = []  # empty array for time
     d_all = [] #empty array for directional weighting
-
-    fig = plt.figure(figsize=(15, 8))
-    axes = fig.add_subplot(111)
+    #
+    # fig = plt.figure(figsize=(15, 8))
+    # axes = fig.add_subplot(111)
 
     tqdm.write('Loading Calibration Coefficients...')
     for path in tqdm(calib_data_paths, colour='yellow'):
-        time.append(sequence_number(path))
         data = np.load(path, allow_pickle=True)  # load data
+
+        if 'arr_0' in data:
+            data = data['arr_0'].item()  # go through first header if it exists
 
         if data['calibration_flag'][channel] == 0:
             continue
 
-        if 'arr_0' in data:
-            data = data['arr_0'].item()  # go through first header if it exists
+        time.append(sequence_number(path))
 
         freqs = data['awac_frequency_bins']  # pull the frequency bins
         wave_band = (freqs >= config.wave_band_min) & (freqs <= config.wave_band_max)
@@ -1178,18 +1202,18 @@ def C_f_v_direction(model_data_dir, save_dir, channel):
         d_all.append(D_f)
         c_all.append(C_f)
 
+    C_arr = np.array(c_all)  # (n_bursts, n_freq)
+    D_arr = np.array(d_all)
+    C_rel = C_arr / np.nanmedian(C_arr, axis=0)  # C relative to its own frequency median
+
     #COLOR PLOT BY TIME
     time_mpl = mdates.date2num(time)
     norm = plt.Normalize(time_mpl.min(), time_mpl.max())
     cmap = plt.get_cmap('viridis')
 
     fig, axes = plt.subplots(figsize=(15, 8))
-    for c, d, t in zip(c_all, d_all, time_mpl):
+    for c, d, t in zip(C_rel, D_arr, time_mpl):
         axes.scatter(d, c, color=cmap(norm(t)), s=6, alpha=0.5)
-
-    axes.set_yscale('log')
-    axes.set_xlabel('$D_f$ (effective directional weight)')
-    axes.set_ylabel('Calibration Coefficient (-/-)')
 
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
     cbar = fig.colorbar(sm, ax=axes)
@@ -1197,18 +1221,18 @@ def C_f_v_direction(model_data_dir, save_dir, channel):
     cbar.ax.yaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
 
     # binned median trend across all bursts and frequencies
-    D_all = np.concatenate(d_all)
-    C_all = np.concatenate(c_all)
+    D_all = np.concatenate(D_arr)
+    C_all = np.concatenate(C_rel)
     ok = np.isfinite(D_all) & np.isfinite(C_all) & (C_all > 0)
     bins = np.linspace(np.nanmin(D_all[ok]), np.nanmax(D_all[ok]), 15)
     idx = np.digitize(D_all[ok], bins)
-    centers = [(bins[i - 1] + bins[i]) / 2 for i in range(1, len(bins)) if (idx == i).sum() > 5]
+    centers = [(bins[i - 1] + bins[i]) / 2 for i in range(1, len(bins)) if (idx == i).sum() > 5]  #TODO: the bins already return the centers?
     medians = [np.median(C_all[ok][idx == i]) for i in range(1, len(bins)) if (idx == i).sum() > 5]
     axes.plot(centers, medians, "r-o", lw=2, zorder=4, label="binned median")
     #
     axes.set_yscale("log")
     axes.set_xlabel("$D_f$ (effective directional weight)")
-    axes.set_ylabel("$C_f$")
+    axes.set_ylabel("$C_f$ / median($C_f$)")
     # plt.colorbar(sc, ax=axes, label="Frequency (Hz)")
     axes.legend()
     axes.grid(alpha=0.3)
@@ -1218,6 +1242,178 @@ def C_f_v_direction(model_data_dir, save_dir, channel):
     plt.close('all')
 
 
+def C_f_v_direction_comp(weighted_dir, unweighted_dir, save_dir, channel, config):
+
+    w_paths = sorted(glob.glob(os.path.join(weighted_dir, '*.npz')), key=sequence_number)
+    u_paths = sorted(glob.glob(os.path.join(unweighted_dir, '*.npz')), key=sequence_number)
+
+    cw_all, cu_all, d_all, time = [], [], [], []  #cw_all, cu_all will have shape (n_bursts, n_freqs)
+
+    tqdm.write('Loading Calibration Coefficients...')
+    for w_path, u_path in tqdm(zip(w_paths, u_paths), total=len(w_paths), colour='yellow'):
+        w = np.load(w_path, allow_pickle=True)  #weighted data
+        u = np.load(u_path, allow_pickle=True)  #unweighted data
+
+        if 'arr_0' in w:
+            w = w['arr_0'].item()
+        if 'arr_0' in u:
+            u = u['arr_0'].item()
+
+        if w['calibration_flag'][channel] == 0 or u['calibration_flag'][channel] == 0:  #skip if the calibration was bad
+            continue
+
+        time.append(sequence_number(w_path))  #build out time array
+
+        freqs = w['awac_frequency_bins']  #pull the frequency bins - same for weighted and unweighted
+        wave_band = (freqs >= config.wave_band_min) & (freqs <= config.wave_band_max)  #define the wave band of frequencies
+
+        S = w['awac_corrected_frequency_spectrum'][channel, wave_band]  #clip the unweighted 1D spectrum
+        S_w = w['awac_cable_weighted_frequency_spectrum'][channel, wave_band]  #clip the weighted 1D spectrum
+        with np.errstate(divide="ignore", invalid="ignore"):
+            d_all.append(S_w / S)           # D_f from the weighted files only
+
+        cw_all.append(w['calibration_coefficient_freq_dependent'][channel])  #weighted calibration coefficient at a channel
+        cu_all.append(u['calibration_coefficient_freq_dependent'][channel])  #unweighted calibration coefficient at a channel
+
+
+    print(np.shape(cw_all))
+    spread_w = np.nanstd(np.log(np.array(cw_all)), axis=0)  # one value per frequency. - cw_all original shape is (n_bursts, n_freqs)
+    spread_u = np.nanstd(np.log(np.array(cu_all)), axis=0)  #std(ln C) measures relative variability in C and ignores constant differences in scale between the weighted and unweighted versions.
+    # A lower value with the weight means it reduced burst-to-burst variability, not just the magnitude of C.
+
+    #stability test
+    fig_s, ax_s = plt.subplots(figsize=(8, 5))
+    ax_s.plot(freqs[wave_band], spread_u, 'o-', label='Unweighted')
+    ax_s.plot(freqs[wave_band], spread_w, 'o-', label='Weighted')  #TODO: only keep this section of the function.
+    ax_s.set_xlabel('Frequency (Hz)')
+    ax_s.set_ylabel('std( ln C ) across time')
+    ax_s.legend()
+    ax_s.grid(alpha=0.3)
+    fig_s.savefig(f'{save_dir}/channel_{channel}_C_stability.png')
+
+    plt.show()
+    plt.close('all')
+    print('median spread unweighted:', np.nanmedian(spread_u))
+    print('median spread weighted:  ', np.nanmedian(spread_w))
+
+    # D_arr = np.array(d_all)                                  # (n_bursts, n_freq)
+    # Cw_rel = np.array(cw_all) / np.nanmedian(cw_all, axis=0)
+    # Cu_rel = np.array(cu_all) / np.nanmedian(cu_all, axis=0)
+
+    # logCw = np.log(np.array(cw_all))
+    # logCu = np.log(np.array(cu_all))
+
+    # def mad(x):
+    #     return 1.4826 * np.nanmedian(np.abs(x - np.nanmedian(x, axis=0)), axis=0)
+    #
+    # std_w, std_u = np.nanstd(logCw, axis=0), np.nanstd(logCu, axis=0)
+    # mad_w, mad_u = mad(logCw), mad(logCu)
+    #
+    # f_band = freqs[wave_band]
+    # fig_s, axs = plt.subplots(1, 2, figsize=(14, 5), sharex=True, sharey=True)
+    # for ax_s, (s_u, s_w), name in zip(axs, ((std_u, std_w), (mad_u, mad_w)),
+    #                                    ('std( ln C )', 'MAD( ln C )')):
+    #     ax_s.plot(f_band, s_u, 'o-', label='Unweighted')
+    #     ax_s.plot(f_band, s_w, 'o-', label='Weighted')
+    #     ax_s.set_xlabel('Frequency (Hz)')
+    #     ax_s.set_ylabel(f'{name} across time')
+    #     ax_s.legend()
+    #     ax_s.grid(alpha=0.3)
+    # fig_s.savefig(f'{save_dir}/channel_{channel}_C_stability.png')
+    #
+    # print('median std  unweighted:', np.nanmedian(std_u), ' weighted:', np.nanmedian(std_w))
+    # print('median MAD  unweighted:', np.nanmedian(mad_u), ' weighted:', np.nanmedian(mad_w))
+
+    # time_mpl = mdates.date2num(time)
+    # norm = plt.Normalize(time_mpl.min(), time_mpl.max())
+    # cmap = plt.get_cmap('viridis')
+    #
+    # fig, axes = plt.subplots(1, 2, figsize=(15, 7), sharex=True, sharey=True)
+    #
+    # for ax, C_rel, title in zip(axes, (Cu_rel, Cw_rel), ('Unweighted', 'Weighted')):
+    #     for c, d, t in zip(C_rel, D_arr, time_mpl):
+    #         ax.scatter(d, c, color=cmap(norm(t)), s=6, alpha=0.5)
+    #
+    #     D_all = np.concatenate(D_arr)
+    #     C_all = np.concatenate(C_rel)
+    #     ok = np.isfinite(D_all) & np.isfinite(C_all) & (C_all > 0)
+    #     bins = np.linspace(np.nanmin(D_all[ok]), np.nanmax(D_all[ok]), 15)
+    #     idx = np.digitize(D_all[ok], bins)
+    #     centers = [(bins[i - 1] + bins[i]) / 2 for i in range(1, len(bins)) if (idx == i).sum() > 5]
+    #     medians = [np.median(C_all[ok][idx == i]) for i in range(1, len(bins)) if (idx == i).sum() > 5]
+    #     ax.plot(centers, medians, "r-o", lw=2, zorder=4, label="binned median")
+    #
+    #     ax.set_yscale('log')
+    #     ax.set_xlabel('$D_f$ (effective directional weight)')
+    #     ax.set_title(title)
+    #     ax.legend()
+    #     ax.grid(alpha=0.3)
+    #
+    # axes[0].set_ylabel('$C_f$ / median($C_f$)')
+    #
+    # sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    # cbar = fig.colorbar(sm, ax=axes)
+    # cbar.set_label('Time')
+    # cbar.ax.yaxis.set_major_formatter(mdates.DateFormatter('%m/%d/%Y'))
+    #
+    # plt.savefig(f'{save_dir}/channel_{channel}_C_f_v_direction.png')
+    # plt.show()
+    # plt.close('all')
+
+
+def f_k_plot(das_data_paths, das_xyz_grid, target_time, channel_start, channel_end, config):
+
+    '''plot the frequency - wavenumber spectrum for a given channel'''
+    # the slope of a f-k spectra line is equal to the group velocity if
+    file_list = get_burst_files(das_data_paths, target_time) #get burst of DAS data based on the target time
+
+    #unpack the das file
+    phase_list = []
+    for f in file_list:
+        phase, _ = load_processedData(f)
+        # phase = strain2phase(strain) #convert the strain back to phase shifts
+        phase_list.append(phase)
+    phase_array = np.concatenate(phase_list, axis=0) #concatenate along the time axis
+
+    freqs, k, psd = get_f_k_2D(phase_array, channel_start, channel_end, config, pad_factor=1)
+
+    zs = das_xyz_grid['zs'] #depths
+    chnls = das_xyz_grid['chnls'] #channels
+
+    chnl_mask = (chnls >= channel_start) & (chnls <= channel_end) #mask of used channels
+    z_masked = zs[chnl_mask] #mask the cable depths
+    h = np.nanmean(z_masked)  # mean depth of the segment
+    h_max = np.nanmax(z_masked)  # max depth of the segment
+    h_min = np.nanmin(z_masked) # min depth of the segment
+
+    disp_k = wavenumber(h, 1/freqs)  #calculate the theoretical dispersion relation for the mean depth of the segment
+    disp_k_max = wavenumber(h_max, 1/freqs)  #calculate the theoretical dispersion relation for the max depth of the segment
+    disp_k_min = wavenumber(h_min, 1/freqs)  #calculate the theoretical dispersion relation for the min depth of the segment
+
+    #plot f-k spectrum
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_subplot(111)
+    pc = ax.pcolormesh(k, freqs, psd, shading='auto', cmap='viridis', vmin=0, vmax=np.nanpercentile(psd, 99))
+    # pc = ax.pcolormesh(k, freqs, psd, shading='auto', cmap='viridis',
+    #                    norm=LogNorm(vmin=psd.max() * 1e-4, vmax=psd.max()))
+    # ax.plot(disp_k, freqs, color='r', linestyle='--', label='Theoretical Dispersion Relation')
+    # ax.plot(-disp_k, freqs, color='r', linestyle='--')
+    ax.plot(disp_k_max, freqs, color='r', linestyle=':', label='Max Depth Dispersion Relation')
+    ax.plot(-disp_k_max, freqs, color='r', linestyle=':')
+    ax.plot(disp_k_min, freqs, color='r', linestyle=':', label='Min Depth Dispersion Relation')
+    ax.plot(-disp_k_min, freqs, color='r', linestyle=':')
+    ax.set_xlabel('Wavenumber (rad/m)')
+    ax.set_ylabel('Frequency (Hz)')
+    ax.set_title(f'f-k Spectrum for Channels {channel_start}-{channel_end} at {target_time.strftime("%Y-%m-%d %H:%M:%S")}') #TODO: make this the actual file time
+    ax.legend(fontsize='small', loc='lower right')
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.1)
+    fig.colorbar(pc, cax=cax, label='Power Spectral Density (rad² / (Hz*(rad/m))')
+
+    plt.savefig(f'{config.figure_directory}/fk_plots/channel_{channel_start}_{channel_end}_f_k_spectrum_{target_time.strftime("%Y_%m_%d_%H_%M_%S")}.png')
+    plt.show()
+    plt.close('all')
 
 
 
@@ -1225,13 +1421,13 @@ if __name__ == "__main__":
 
     config = DASConfig() #load configuration parameters
 
-    #processed data
+    # #processed data
     # processed_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     # strain, time = load_processedData(processed_data_paths) #pull processed strain and time data
-
+    #
     # datetime_array = time2dateTime(time) #convert unix to datetime for visualizations
-
-    # define starttime and endtime for plotting
+    #
+    # # define starttime and endtime for plotting
     # starttime = datetime(2026, 6, 6, 0, 0, 0, tzinfo=timezone.utc)
     # endtime = datetime(2026, 6, 6, 23, 59, 59, tzinfo=timezone.utc)
 
@@ -1313,14 +1509,14 @@ if __name__ == "__main__":
     # AWAC300_v_AWAC600(awac_data_dir, save_dir)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT - DAS V MODEL'''
-    # target_time = datetime(2026, 6, 8, 7, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
+    # target_time = datetime(2026, 6, 7, 8, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
     # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
     # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
     # save_path = config.figure_directory / 'area_matching_freq_dependent'
     # # allAvg_C_f_path = config.data_directory / 'frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'   #entire dataset averaged c(f)
     # dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  #day averaged c(f)
     # filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
-    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=705)
+    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=402)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT OVER TIME'''
     # # average frequency dependent calibration coefficient over all data bursts
@@ -1336,19 +1532,33 @@ if __name__ == "__main__":
     # save_path = config.figure_directory / 'wave_information'
     # Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_dependent')
 
-
     '''C_f v directional weight'''
-    model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    save_dir = config.figure_directory / 'wave_information'
-    C_f_v_direction(model_data_dir, save_dir, channel=402)
+    # weighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # unweighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # save_dir = config.figure_directory / 'wave_information'
+    # # C_f_v_direction(weighted_model_data_dir, save_dir, channel=402)
+    # C_f_v_direction_comp(weighted_model_data_dir, unweighted_model_data_dir, save_dir, channel=402, config=config)
 
+    '''C_f v AWAC WAVE DIRECTION - DIRECTIONAL WEIGHT TEST'''
+    # weighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # unweighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # save_dir = config.figure_directory / 'wave_information'
+    # directional_weight_test(weighted_model_data_dir, unweighted_model_data_dir, save_dir, channel=402)
 
+    '''F - K PLOTS AT A CERTAIN CHANNEL'''
+    # # das_data_paths =  sorted(glob.glob(str(config.data_directory / 'new_frf/processed/2026/10-Oct/20261020/*')), key=sequence_number)
+    # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    # das_xyz_grid = np.load(config.data_directory / 'frf_awac/new_DAS_XYZgrid.pkl', allow_pickle=True)
+    # target_time = datetime(2026, 6, 2, 23, 0, 0) # target time to get das data burst over which to compute the f-k spectra over
+    # f_k_plot(das_data_paths, das_xyz_grid, target_time, channel_start=200, channel_end=400, config=config)
+    # k = waveNumber_from_phase(das_data_paths[500], channel_start=400, channel_end=430, config=config, peak=True, debug=True)
 
-
-
-    #TODO: Finally do the wave direction stuff
-
-    #TODO: f - k plots of the DAS PSD one in the cross shore leg and one on the alongshore leg (need gradient in x to compute the wave number k) - This will distort under oblique waves
+    '''WATERFALL OF NEW DATA'''
+    das_data_paths = sorted(glob.glob(str(config.data_directory / 'new_frf/processed/**/**/**/*')), key=sequence_number)
+    # das_data_paths = [str(config.data_directory / 'new_frf/processed/2026/10-Oct/Processed_data_all_files.h5')]
+    # phase, _ = load_processedData(das_data_paths[0])
+    save_path = str(config.figure_directory)
+    waterFall(das_data_paths, save_path, channel_spacing=1.6, starttime=datetime(2026, 10, 20, 20, 37, 0), endtime=datetime(2026, 10, 20, 20, 48, 0))
 
     #TODO: look at residual spectrum - compute rmse.  function for compute residual - allow for either one x in t or one t in x.
 
@@ -1362,13 +1572,14 @@ if __name__ == "__main__":
 
     #TODO: check that the pressure response value Kp (k and h) is the same for the calibration script and the plotting script
 
-    #TODO: refine the script used to generate the depths along the DAS cable (dasXYZgrid)
+    #TODO: evaluate bulk wave statistics at 300m AWAC and DAS measurements - prove calibration is good in the cross-shore leg between the two AWACs
 
     #TODO: check that alongshore cable end channel and alongshore cable start channel are in exactly the same place - this must be true for the calibration to be precise.
 
-    #TODO: check with people if I need to scale the total variance of the 2D spectrum to match the 1D spectrum (AWAC)
+    #TODO: given that the DAS is buried some depth below the seabed, would we use h at the seabed for pressure response factor or the actual estimated depth + burial.
+    # technically the wave apply a strain to the bed, which is then coupled to the cable - signal attenuates (likely f dependent) based on burial depth.
 
-    #TODO: plot C v the directional weight. if direction is modeled correctly there should be little dependence of C on direction
+    #TODO: three channel discrepancy between fiber 1 metadata and the fiber 1 GUI screen 1595 v 1592 respectively - not an issue if the edges of the channels are clipped
 
 
-
+    #TODO: make sure the calibration and new das orientation match angle conventions.

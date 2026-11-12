@@ -16,7 +16,7 @@ class DASConfig():
     original_sampling_frequency: float = 500.0 #Hz
     decimated_sampling_frequency: float = 2.0 #Hz
     N_channels: int = 1592 #number of channels along the DAS
-    alongshore_channel_start: int = 501 #channel that the alongshore leg should approximately start at
+    alongshore_channel_start: int = 501 #channel that the alongshore leg should approximately start at  #FIXME: this will need to be changed - or axed
     alongshore_channel_end: int = 1091 #channel that the alongshore leg should approximately end at
 
     # --- AWAC PARAMETERS ---

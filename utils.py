@@ -8,6 +8,7 @@ import os
 import json
 import glob
 import h5py
+import scipy
 from scipy.signal import welch
 from scipy.interpolate import interp1d
 from tqdm import tqdm
@@ -38,22 +39,50 @@ def sequence_number(path):
     raise ValueError(f"Filename format not recognized: {filename}")
 
 
+def wavenumber(h, T, tol=1e-6, max_iter=50):
+    """
+    Solve the linear dispersion relation exactly via Newton-Raphson.
+    h: water depth (scalar)
+    T: wave period(s), scalar or array
+    Returns k with same shape as T.
+    """
+    #newton-raphson formula is: xn+1 = xn - f(xn)/f'(xn)
+    g = 9.81
+    h = np.asarray(h, dtype=float) # ensure h is a float array
+    sigma = 2 * np.pi / np.asarray(T, dtype=float) # ensure T is a float array and convert to angular frequency
+    scalar_out = (h.ndim == 0) and (sigma.ndim == 0) # if both h and T are scalars, return a scalar k
+    h = np.where(h > 0, h, np.nan) # avoid negative depths set to NaN
+    k = np.broadcast_to(sigma**2 / g, np.broadcast(sigma, h).shape).copy() # initial guess for k based on deep water approximation
+
+    for _ in range(max_iter):
+        kh = k * h  # dimensionless relative depth (wavenumber x depth)
+        tanh_kh = np.tanh(kh)  # tanh(kh)
+        f = g * k * tanh_kh - sigma ** 2  # residual: f(k) = g*k*tanh(kh) - omega^2, should be zero at the true root
+        fp = g * tanh_kh + g * kh * (1 - tanh_kh ** 2)  # f'(k): derivative of f w.r.t. k (product rule + chain rule on tanh(kh))
+        dk = f / fp  # Newton-Raphson step size: dk = f(k) / f'(k)
+        k = k - dk # update k toward the root: k_new = k_old - dk
+        if np.max(np.abs(dk)) < tol:
+            break
+
+    return float(k) if scalar_out else k
+
+
 def read_Json(filepath):
 
     def print_json(obj, indent=0):
         prefix = "    " * indent  #resursively read all data in the json file
 
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, (dict, list)):
+        if isinstance(obj, dict):  #if the object is a dictionary, iterate through its key-value pairs
+            for key, value in obj.items():  #get the key value pair
+                if isinstance(value, (dict, list)): #if the value is a dictionary or a list, recursively call print_json with increased indentation
                     print(f"{prefix}{key}:")
                     print_json(value, indent + 1)
                 else:
                     print(f"{prefix}{key}: {value}")
 
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                if isinstance(item, (dict, list)):
+        elif isinstance(obj, list):  #if the object is a list
+            for i, item in enumerate(obj):  #get the index and item in the list
+                if isinstance(item, (dict, list)):  #if the item is a dictionary or a list, recursively call print_json with increased indentation
                     print(f"{prefix}[{i}]")
                     print_json(item, indent + 1)
                 else:
@@ -155,10 +184,14 @@ def print_all_attributes(name, obj):
 def load_processedData(processed_data_path):
 
     with h5py.File(processed_data_path, 'r') as f:  #open hdf5 file and read the strain and time datasets
-        strain = f['strain'][:]  # shape (time, N_channels)
+        if 'strain' not in f:  #new files from recent das collect #TODO: find better function for parsing this
+            signal = f['signal'][:]
+        else:
+            signal = f['strain'][:]  # shape (time, N_channels)
+
         time = f['time'][:]  # shape (time,)
 
-    return strain, time
+    return signal, time
 
 
 def phase2strain(phase_shifts, gauge_length=1.6):
@@ -227,9 +260,9 @@ def get_AWAC_data(file_path):
 
     dirspec = data_300['directionalWaveEnergyDensity']  # sea surface wave directional energy spectrum
     # PorAST = data_300['PorAST'].values #PUV or SUV mode
-    gaugeDepth = data_300['gaugeDepth']  # depth from the water surface to the top of the gauge
+    gaugeDepth = data_300['gaugeDepth']  # depth from the water surface to the top of the gauge - using pressure
     gaugeElevation = data_300['gaugeElevation']  # gauge vertical position in NAVD88
-    bottomElevation = data_300['bottomEelevation']  # bottom vertical location from altimiter
+    bottomElevation = data_300['bottomEelevation']  # bottom vertical location from NAVD88 from altimiter
 
     # correct for DAS data using spectral matching
     S_f_theta_eta = dirspec.values  # PSD S_eta(N_samples, f, theta)
@@ -285,7 +318,7 @@ def compute_bulk_statistics(frequency_spectrum, direction_spectrum, frequency_bi
     return Hs, Tp, Thetap
 
 
-def smooth_spectrum(spectrum_1D, window=5, filter_type='boxcar', mode='wrap'):
+def smooth_1D_spectrum(spectrum_1D, window=5, filter_type='boxcar', mode='wrap'):
     #smooth the 1D spectrum using a moving average filter
     # the type of filter window can be boxcar (rectangular) or gaussian
     # mode determines what type of spectrum to use: wrap for 1d direction, reflect is normal for 1d frequency
@@ -301,6 +334,11 @@ def smooth_spectrum(spectrum_1D, window=5, filter_type='boxcar', mode='wrap'):
 
     if filter_type not in ('boxcar' or 'gaussian'):
         raise ValueError("Invalid smoothing type. Choose 'boxcar' or 'gaussian'.")
+
+def smooth_2D_spectrum(spectrum_2D, dir_smooth=2, freq_smooth=1):
+    '''smooth a 2D directional spectrum of shape (n_freqs, n_dirs)'''
+    from scipy.ndimage import gaussian_filter
+    return gaussian_filter(spectrum_2D, sigma=(freq_smooth, dir_smooth), mode=('nearest', 'wrap'))
 
 
 def integrate_spectrum(spectrum, bins, axis, integrate_over):
@@ -330,7 +368,7 @@ def rebin_psd(f_src, S_src, f_tgt):
     # edge extended outward by half a bin so that every center has a lower and upper edge
     # (len(edges) = len(f_tgt) + 1)
     edges = np.concatenate(([f_tgt[0] - d[0] / 2],
-                            (f_tgt[:-1] + f_tgt[1:]) / 2,
+                            (f_tgt[:-1] + f_tgt[1:]) / 2,  #TODO: ensure no frequency shift happens here -seems ok at first glance
                             [f_tgt[-1] + d[-1] / 2]))
 
     # cumulative integral of the source PSD (trapezoid), zero at f_src[0]
@@ -492,7 +530,7 @@ def ncsp2FRF(p1, p2):
 
 
 def build_DAS_XYZ_grid():
-    #TODO: refine this
+    #FIXME: outdated function now
 
     # find the DAS channel closest to the awac and get the PSD to a 34 (35 for DAS) minute burst (average)
 
@@ -621,6 +659,88 @@ def build_DAS_XYZ_grid():
     plt.close('all')
 
 
+def read_mat(mat_path):
+    '''Recursively print the contents of a .mat file, including nested structures and lists.
+    This would likely work for more file types than just .mat - based on the hdf5 and json recursive readers,
+    would need to modify file opening portion of code - though xarray does much of this for other file types already'''
+    def print_mat(obj, indent=0):
+        prefix = "   " * indent  #prefix before each object in the print statement - indented to show the nesting of the data structure
+
+        if isinstance(obj, dict):  #if the object is a dictionary, iterate through its items
+            for key, value in obj.items():  #pull the key value pairs
+
+                if key.startswith('_'):  #skip keys that start with an underscore - matlab metadata
+                    continue
+
+                print(f'{prefix}{key}:')  #print the key
+                print_mat(value, indent+1) # recursively call the function to print the contents of the nested structure inside the dict/list
+
+        elif isinstance(obj, np.ndarray) and obj.dtype.names is not None:  # if the value is a matlab structure or structured array
+            for name in obj.dtype.names:
+                value = obj[name]  # get the value of the field
+                print(f"{prefix}{name}:")  # print the name of the field
+                print_mat(value, indent + 1)  # recursively call the function to print the contents of the nested structure inside the field
+
+        elif isinstance(obj, np.ndarray): #check if the object is a numpy array
+
+            if obj.ndim == 0: #check if the array is 0-dimensional
+                value = obj.item() #extract the underlying object
+
+                if isinstance(value, np.ndarray): #check if the object is a numpy array of numpy arrays
+                    print_mat(value, indent + 1) #recursively call the function to print the contents of the nested structure inside the array
+                elif isinstance(value, str): #check if the object is a string
+                    print(f"{prefix}Values: {value}") #print the string value
+
+                return
+
+            print(f"{prefix}Type: {type(obj).__name__}") #print the type of the object
+            print(f"{prefix}Shape: {obj.shape}") #print the shape of the object
+            print(f"{prefix}Dtype: {obj.dtype}") #print the data type of the object
+
+        elif isinstance(obj, (list, tuple)): # check if the object is a list or tuple
+            for i, item in enumerate(obj):
+                if item.startswith('_'):
+                    continue
+                print(f"{prefix}[{i}]:")  # print the index of the item
+                print_mat(item, indent + 1)  # recursively call the function to print the contents of the nested structure inside the list/tuple
+
+        else: #everything else
+            print(f"{prefix}Type: {type(obj).__name__}")  # print the type of the object
+            print(F"{prefix}Value: {obj}")  # print the value of the object
+
+
+    mat_contents = scipy.io.loadmat(str(mat_path), squeeze_me=True, struct_as_record=True) #load the mat file from the path
+    print_mat(mat_contents) #call the print_mat function to print all contents inside the file
+
+
+def get_f_k_2D(phase, channel_start, channel_end, config, pad_factor=4):
+    '''2D f-k power spectrum over a straight cable segment. Positive k = propagating toward increasing channel index (positive x points offshore).'''
+
+    phase = phase[:, channel_start:channel_end+1]  # clip by channel location
+
+    n_samples, n_channels = np.shape(phase)  # shape of the strain array
+
+    dx = config.channel_spacing # channel space in m
+    fs = config.decimated_sampling_frequency #sampling frequency in Hz
+
+    win = np.hanning(n_samples)[:, None] * np.hanning(n_channels)[None, :]  # taper both axes
+    phase = phase * win #apply hanning window taper
+
+    nk = pad_factor * n_channels  # zero-pad in space only to smooth the k axis
+    F = np.fft.fft(np.fft.ifft(phase, n=nk, axis=1) * nk, axis=0)  # fft in time, ifft in space -> +k = toward +channel
+    P = np.abs(F) ** 2 * dx / (fs * np.sum(win ** 2))  # rad^2 / (Hz * cycles/m)
+    P = P / (2 * np.pi)  # rad^2 / (Hz * rad/m)
+
+    f = np.fft.fftfreq(n_samples, d=1 / fs)
+    k = 2 * np.pi * np.fft.fftfreq(nk, d=dx)  # rad/m
+    P = np.fft.fftshift(P, axes=1)
+    k = np.fft.fftshift(k)
+
+    pos = (f >= config.wave_band_min) & (f <= 0.5)  # wave band only
+    return f[pos], k, P[pos, :]
+
+
+
 
 if __name__ == "__main__":
 
@@ -646,6 +766,6 @@ if __name__ == "__main__":
     # average_C_f_over_day(data_dir, save_dir)
 
     #inspect metadata
-    das_file_path = config.data_directory / 'processed_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5'
-    inspect_metadata(das_file_path)
+    # das_file_path = config.data_directory / 'processed_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5'
+    # inspect_metadata(das_file_path)
 

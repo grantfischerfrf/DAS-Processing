@@ -15,10 +15,10 @@ if __name__ == '__main__':
     config = DASConfig() #initialize configuration parameters
 
     #folder containing the data to be processed
-    datafolder = config.data_directory / 'for_OSU/20260614'
+    datafolder = config.data_directory / 'new_frf/decimated/2026/10-Oct/20261020'
 
     #folder where the data is to be saved
-    savefolder = config.data_directory / 'for_OSU_processed/20260614'
+    savefolder = config.data_directory / 'new_frf/processed/2026/10-Oct/20261020'
 
     #create folder if it does not exist
     os.makedirs(savefolder, exist_ok=True)
@@ -35,9 +35,9 @@ if __name__ == '__main__':
     worker = partial(process_worker,
                      all_files=all_files, savefolder=savefolder,
                      gauge_length=gauge_length, sampling_frequency=sampling_frequency, temporal_window=temporal_window,
-                     downsample=False, cutoff_frequency=1, downsample_frequency=downsample_frequency, multi_save=True) #define a worker function for the multiprocessing
+                     downsample=False, low_cutoff_frequency=1, high_cutoff_frequency=0.05, downsample_frequency=downsample_frequency, multi_save=True) #define a worker function for the multiprocessing
 
-    with Pool(processes=6) as pool:  #loop through all the files and process with 'x' number of workers
+    with Pool(processes=6) as pool:  #loop through all the files and process with 'x' number of workers - if you are using multi_save=False, only one worker can be used - can't concurrent write the same file
         for msg in tqdm(pool.imap_unordered(worker, indices), total=len(indices), colour='yellow'):  #Processes the files in an unordered manner - can return 1, 3, 2
             pass
 
