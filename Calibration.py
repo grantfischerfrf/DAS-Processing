@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import xarray as xr
 import re
-from utils import load_processedData, get_DAS_PSD, get_DAS_PSD_burst, strain2phase, get_AWAC_data, rebin_psd
+from utils import load_processedData, get_DAS_PSD, get_DAS_PSD_burst, strain2phase, get_AWAC_data, rebin_psd, get_channel_orientation
 from scipy.signal import welch
 from tqdm import tqdm
 from config import DASConfig
@@ -124,24 +124,36 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
     '''Propagate the 2D directional spectrum from the AWAC along the DAS grid using linear wave theory'''
 
     #get the depth grid along the DAS cable
-    bed = channel_grid['z'].values  # depth at all channels along the grid
-    n_channels = config.N_channels # number of channels in the DAS
+    # print(channel_grid.keys())
+    bed = channel_grid['zs']  # depth at all channels along the grid NAVD88 - deep values are positive - pulled from ensemble of multibeam data and corrected for sediment accumulation/erosion
+    channel_numbers = channel_grid['chnls'] # true channel numbers of the DAS cable
+    n_channels = len(channel_numbers) # number of channels
+
+    # x1_ind = channel_grid['x1_ind']
+    y1_ind = channel_grid['y1_ind']
+    y2_ind = channel_grid['y2_ind']
+    # x2_ind = channel_grid['x2_ind']
+
+    alongshore_channel_start = range(n_channels)[y1_ind[0]] # start channel idx of the y1_leg - jump from cross to alongshore
+    alongshore_channel_end = range(n_channels)[y2_ind[-1]] # end channel idx of the y2_leg - return to crossshore
 
     nf, ndir = len(awac_freqs), len(dirs) #number of frequency and direction bins
 
-    alongshore_channel_start = config.alongshore_channel_start  # approximate first channel of the alongshore leg of the DAS cable
-    alongshore_channel_end = config.alongshore_channel_end  # approximate last channel of the alongshore leg of the DAS cable
+    # alongshore_channel_start = config.alongshore_channel_start  # approximate first channel of the alongshore leg of the DAS cable
+    # alongshore_channel_end = config.alongshore_channel_end  # approximate last channel of the alongshore leg of the DAS cable
+
+    # get the local orientation of the DAS channels relative to the FRF coordinate system - in degrees - dont need to rotate, the x, y coords were already in FRF
+    channel_orientation = get_channel_orientation(channel_grid, config.orientation_half_window)
 
     awac_wave_band = (awac_freqs >= config.wave_band_min) & (awac_freqs <= config.wave_band_max)  # wave band to bandpass signal
 
     # trig for wave refraction - AWAC measures wave direction in degrees COMING FROM true north
-    theta0_deg_grid = dirs - config.FRF_orientation  # convert measured wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore. direction bins oriented to FRF
+    theta0_deg_grid = -(dirs - config.FRF_orientation)  # convert measured wave angle to xFRF shore normal convention for snells law - shore normal pointing offshore. direction bins oriented to FRF
     theta0_deg_grid = (theta0_deg_grid + 180) % 360 - 180  # wrap to -180, 180. #waves propagating in opposite direction of positive x axis. (positive x points offshore, bin 0 is now bin -71.8535)
-    # waves are negative COMING FROM the north and positive when COMING FROM the south
+    # waves are positive COMING FROM the north (CCW from 0) and negative when COMING FROM the south (CW from 0) -> to reverse, take the negative sign away from line 138
 
     theta0_rad_grid = np.deg2rad(theta0_deg_grid)  # convert to radians: shape of (dirs,) - directional bins in radians - no values inside the bins yet
-    cos_theta0 = np.cos(theta0_rad_grid)  # precomputation of cos(theta0)
-    sin_theta0 = np.sin(theta0_rad_grid)  # precomputation of sin(theta0)
+    channel_orientation_rad = np.deg2rad(channel_orientation)
 
     order = np.argsort(theta0_rad_grid) # sort the directional bins so the linear remap is monotonic
     normal_order = np.argsort(order) # inverse operation for reordering the directional bins back to the original order after remapping
@@ -151,24 +163,14 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
     refract_dir = (np.abs(theta0_deg_grid[order]) < 80)[None, :]  # (1, ndir) # only consider waves that are within 80 degrees of the shore normal for refraction. avoid singularity in Snells law
     cos1_min = 0.1  # minimum cos(theta1) to avoid singularity in Snell's law. This is a small angle of incidence (theta1 ~ 84 degrees)
 
-    dir_exp = config.directional_weight  # direction exponent
-    D_cross = np.abs(cos_theta0) ** dir_exp  # cross-shore cable: along-axis waves produce the greatest response
-    D_along = np.abs(sin_theta0) ** dir_exp  # alongshore cable: waves perpendicular to the cable procduce the smallest response
-
-    channel_numbers = np.array(range(n_channels)) + 1  #add one because python uses 0 index. 1-1592 grid
-
     dtheta_rad = np.mean(np.diff(theta0_rad_sorted)) # average directional bin width in radians - if the bin widths are constant this is the same as dtheta_rad = np.diff(theta0_rad_sorted)[0]
     f_idx = np.repeat(np.arange(nf)[:, None], ndir, axis=1) # frequency index array for the 2D directional spectrum - shape (nf, ndir)
+
+    D_all = np.abs(np.cos(theta0_rad_grid[None, :] - channel_orientation_rad[:, None])) ** config.directional_weight  # (n_channels, ndir) - directional weight for all channels
 
     # burst_chunk is a list of (burst_start, file_list) tuples -- already grouped
     # and validated as complete bursts before this function is ever called
     for b_start, burst_files in tqdm(burst_chunk, colour='yellow'):
-
-        def directional_weight(ch):  # helper function for directional weighting
-            # same channel logic as your cross-shore / alongshore branches
-            if (ch < alongshore_channel_start) or (ch > alongshore_channel_end):
-                return D_cross
-            return D_along
 
         das_start_time = np.datetime64(b_start)  #start time of the burst file
 
@@ -191,8 +193,8 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
         #define the water depth at the AWAC for the specific time index
         #Remember these are burst averaged quantities - averaged over 34 minutes
         gaugeDepth0 = gaugeDepth.values[time_idx] # depth from the water surface to the top of the gauge - positive value
-        bottomElevation0 = bottomElevation.values[time_idx]# gauge vertical position in NAVD88 - negative value
-        gaugeElevation0 = gaugeElevation.values.item() # bottom vertical location from altimiter - negative value
+        bottomElevation0 = bottomElevation.values[time_idx]# bottom vertical position in NAVD88 - negative value
+        gaugeElevation0 = gaugeElevation.values.item() # gauge vertical location from altimiter - negative value
 
         depth_from_bottom = gaugeElevation0 - bottomElevation0  #float: gives a positive depth up from the bottom
         h0 = gaugeDepth0 + depth_from_bottom  #float: gives the total positive depth at the location of the awac at a particular time ([time_idx] gives the time index)
@@ -200,7 +202,7 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
         surfaceElevation = gaugeElevation0 + gaugeDepth0  #float: gives the surface elevation above or below NAVD88 reference - basically the average tidal signal (+/-) over the 34 minutes
 
         #generate grid of depths over the das cable
-        h_grid = surfaceElevation - bed  #depth grid along the DAS cable, shape(1592,)
+        h_grid = bed + surfaceElevation  #depth grid along the DAS cable, shape(n_channels,) -> all in NAVD88
         h_grid[config.awac600_channel_location] = h0  #replace the depth at the awac location with the actual depth measured by the awac
 
         #wavenumber computation
@@ -216,23 +218,23 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
         cg_grid = groupSpeed(h_grid[:, None], k_grid) #compute group speed at the DAS grid locations using dispersion relation. shape(n_channels, n_freqs)
 
         #initialize arrays to hold the results for each channel
-        calibration_flag = np.ones(config.N_channels, dtype=int) #flag to identify bad calibration channels
+        calibration_flag = np.ones(n_channels, dtype=int) #flag to identify bad calibration channels
         calibration_flag[~(h_grid > 0)] = 0 # flag channels that are above the water surface (h_grid < 0) as bad calibration channels
 
-        C = np.full(config.N_channels, np.nan, dtype=np.float32)  # frequency independent calibration factor
-        C_f = np.full((config.N_channels, len(awac_freqs[awac_wave_band])), np.nan, dtype=np.float32)  # frequency dependent calibration factor
-        water_depth = np.full(config.N_channels, np.nan) # water depth at each channel location
-        S1_directional_spectrum = np.full((config.N_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32) # 2D spectrum at each channel location
-        S1_integrated_spectrum = np.full((config.N_channels, len(awac_freqs)), np.nan, dtype=np.float32) # 1D spectrum at each channel location
+        C = np.full(n_channels, np.nan, dtype=np.float32)  # frequency independent calibration factor
+        C_f = np.full((n_channels, len(awac_freqs[awac_wave_band])), np.nan, dtype=np.float32)  # frequency dependent calibration factor
+        water_depth = np.full(n_channels, np.nan) # water depth at each channel location
+        S1_directional_spectrum = np.full((n_channels, len(awac_freqs), len(dirs)), np.nan, dtype=np.float32) # 2D spectrum at each channel location
+        S1_integrated_spectrum = np.full((n_channels, len(awac_freqs)), np.nan, dtype=np.float32) # 1D spectrum at each channel location
 
         # direction weighted spectrum
-        S1_weight_spectrum = np.full((config.N_channels, len(awac_freqs)), np.nan, dtype=np.float32) # 1D weighted spectrum at each channel location
-        D_weight = np.full(config.N_channels, np.nan, dtype=np.float32) # directional weighting factor at each channel location
+        S1_weight_spectrum = np.full((n_channels, len(awac_freqs)), np.nan, dtype=np.float32) # 1D weighted spectrum at each channel location
+        D_weight = np.full(n_channels, np.nan, dtype=np.float32) # directional weighting factor at each channel location
 
         S_corner = None  # spectrum for the corner of the cross and alongshore channels
         cg_corner = None
 
-        for ch in range(config.N_channels):
+        for ch in range(n_channels):
 
             if calibration_flag[ch] == 0: # if the channel is flagged as bad, skip it
                 continue
@@ -251,7 +253,7 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
                 S1_integrated_spectrum[ch, :] = S1_integrated  #append to integrated spectrum array for later saving
 
                 # compute calibration coefficient at the AWAC location using the unshoaled spectrum
-                D = directional_weight(ch)  # get the directional weight for this channel, shape : (n_dirs)
+                D = D_all[ch]  # get the directional weight for this channel, shape : (n_dirs)
                 S1_weight = np.nansum(S1_local * D[None, :], axis=1) * dtheta  # compute the weighted spectrum by integrating over direction with the directional weight, shape : (n_freqs)
                 pressure_spectrum = S1_weight * ((config.rho * config.g * Kp0) ** 2)  # convert the sea surface elevation spectrum to a pressure spectrum using linear wave theory, shape : (n_freqs)
 
@@ -337,12 +339,12 @@ def propagate_spectrum(burst_chunk, save_folder, channel_grid,
             S1_integrated_spectrum[ch] = S1_integrated # store the 1D integrated spectrum at the current channel location (nf,)
 
             # cable weighting and pressure
-            D = directional_weight(ch)  # get the directional weight for this channel, shape : (n_dirs)
+            D = D_all[ch]  # get the directional weight for this channel, shape : (n_dirs)
             S1_weight = np.nansum(S1_local * D[None, :], axis=1) * dtheta # compute the weighted 1D spectrum by integrating over direction with the directional weight, shape : (n_freqs)
             pressure_spectrum = S1_weight * (config.rho * config.g * Kp_grid[ch]) ** 2 #convert the 1D SSE spectrum to dynamic pressure spectrum using linear wave theory
             S1_weight_spectrum[ch] = S1_weight # save the 1D SSE weighted spectrum at the current channel location
             D_weight[ch] = np.nansum(S1_local[awac_wave_band, :] * D[None, :]) / np.nansum(S1_local[awac_wave_band, :]) #scalar weight averaged over frequency and direction.
-            # 1 means waves are ~ cable orientation. 0 means oblique waves
+            # 1 means waves are ~ cable orientation. 0 means perpendicular waves, oblique waves give intermediate values
             # no bins needed with np.nansum because it is a ratio here
 
             # Calibration

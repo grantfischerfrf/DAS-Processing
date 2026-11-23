@@ -77,6 +77,8 @@ def plot_timeSeries(file_paths, channel:int, save_path:str, t_start=None, t_end=
 
 def waterFall(das_data_paths, savepath:str, channel_spacing, channel_start:int=None, channel_end:int=None, starttime:datetime=None, endtime:datetime=None):
 
+    #TODO: fix this such that the startime and endtime will find the nearest file so that there is not white space on the plot
+
     if starttime is not None and endtime is not None:
         das_data_paths = clip_by_time(das_data_paths, starttime, endtime)
 
@@ -85,7 +87,6 @@ def waterFall(das_data_paths, savepath:str, channel_spacing, channel_start:int=N
     time_list = []
     for path in das_data_paths:
         phase, time = load_processedData(path)  #TODO: quick fix - make this plot data from one file then toss old data - open new file, in the future. add config as arg
-        # phase = phase - np.nanmean(phase, axis=0, keepdims=True)
         data_list.append(phase)
         time_list.append(time)
 
@@ -1487,20 +1488,20 @@ if __name__ == "__main__":
 
     '''DAS CALIBRATION CHECK - ONE CHANNEL - ONE BURST - FREQUENCY INDEPENDENT CALIBRATION'''
     # target_time = datetime(2026, 6, 1, 5, 0, 0) #target time to check spectra
-    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
     # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
     # save_path = config.figure_directory / 'area_matching'
     # Calibrated_DAS_v_Model(das_data_paths, model_data_dir, save_path, target_time, channel=402)
 
     '''DAS CALIBRATION CHECK - RMS PRESSURE - ALL CHANNELS - ALL BURSTS'''
-    # model_data_paths = sorted(glob.glob('./data/frf_awac/calibration_coefficients_burst_600/*'), key=sequence_number)
+    # model_data_paths = sorted(glob.glob('./data/frf_awac/calibration_data_burst_600/*'), key=sequence_number)
     # das_data_paths = sorted(glob.glob('./data/for_OSU_processed/**/*'), key=sequence_number)
     # save_path = './figures/area_matching'
     # Calibrated_DAS_v_Model_allBursts(das_data_paths, model_data_paths, save_path)
 
     '''BULK WAVE PARAM COMPARISON BETWEEN MODEL AND AWAC'''
     # awac_data_dir = config.data_directory / 'frf_awac/'
-    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600'
     # AWAC_modelVobs(awac_data_dir, model_data_dir)
 
     '''BULK WAVE PARAM COMPARISON BETWEEN 300 AND 600 AWACS'''
@@ -1509,39 +1510,39 @@ if __name__ == "__main__":
     # AWAC300_v_AWAC600(awac_data_dir, save_dir)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT - DAS V MODEL'''
-    # target_time = datetime(2026, 6, 7, 8, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
-    # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
-    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    # save_path = config.figure_directory / 'area_matching_freq_dependent'
-    # # allAvg_C_f_path = config.data_directory / 'frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'   #entire dataset averaged c(f)
-    # dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  #day averaged c(f)
-    # filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
-    # Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=402)
+    target_time = datetime(2026, 6, 2, 23, 0, 0)  # target time to check spectra        #MAKE SURE THIS IS UPDATED BY RUNNING UTILS.PY. OTHERWISE, IT WILL BE AN OLD FILE CAUSING ERRORS
+    das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
+    save_path = config.figure_directory / 'area_matching_freq_dependent'
+    # allAvg_C_f_path = config.data_directory / 'frf_awac/freq_dependent_calib_coeff/avg_calibCoeff_freqDependent.npy'   #entire dataset averaged c(f)
+    dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  #day averaged c(f)
+    filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  #remove files without a number in the path
+    Calibrated_DAS_freq_dependent_v_Model(das_data_paths, model_data_dir, filtered_files, save_path, target_time, channel=330)
 
     '''FREQUENCY DEPENDENT CALIBRATION COEFFICIENT OVER TIME'''
     # # average frequency dependent calibration coefficient over all data bursts
     # save_dir = config.figure_directory
-    # model_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # model_dir = config.data_directory / 'frf_awac/calibration_data_burst_600'
     # C_f_v_Time(model_dir, save_dir, channel=402)
 
     '''COMPUTE BULK WAVE STATISTICS AT A CHANNEL'''
-    # model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
+    # model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
     # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
     # dayAvg_C_f_paths = glob.glob(str(config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted/*.npy'))  # day averaged c(f)
     # filtered_files = sorted([f for f in dayAvg_C_f_paths if any(char.isdigit() for char in os.path.basename(f))], key=sequence_number)  # remove files without a number in the path
     # save_path = config.figure_directory / 'wave_information'
-    # Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=402, calibration='freq_dependent')
+    # Compare_Bulk_Wave_Stats(model_data_dir, das_data_paths, filtered_files, save_path, channel=330, calibration='freq_independent')
 
     '''C_f v directional weight'''
-    # weighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    # unweighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # weighted_model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
+    # unweighted_model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600'
     # save_dir = config.figure_directory / 'wave_information'
     # # C_f_v_direction(weighted_model_data_dir, save_dir, channel=402)
     # C_f_v_direction_comp(weighted_model_data_dir, unweighted_model_data_dir, save_dir, channel=402, config=config)
 
     '''C_f v AWAC WAVE DIRECTION - DIRECTIONAL WEIGHT TEST'''
-    # weighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    # unweighted_model_data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600'
+    # weighted_model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
+    # unweighted_model_data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600'
     # save_dir = config.figure_directory / 'wave_information'
     # directional_weight_test(weighted_model_data_dir, unweighted_model_data_dir, save_dir, channel=402)
 
@@ -1554,32 +1555,34 @@ if __name__ == "__main__":
     # k = waveNumber_from_phase(das_data_paths[500], channel_start=400, channel_end=430, config=config, peak=True, debug=True)
 
     '''WATERFALL OF NEW DATA'''
-    das_data_paths = sorted(glob.glob(str(config.data_directory / 'new_frf/processed/**/**/**/*')), key=sequence_number)
-    # das_data_paths = [str(config.data_directory / 'new_frf/processed/2026/10-Oct/Processed_data_all_files.h5')]
-    # phase, _ = load_processedData(das_data_paths[0])
-    save_path = str(config.figure_directory)
-    waterFall(das_data_paths, save_path, channel_spacing=1.6, starttime=datetime(2026, 10, 20, 20, 37, 0), endtime=datetime(2026, 10, 20, 20, 48, 0))
+    # das_data_paths = sorted(glob.glob(str(config.data_directory / 'new_frf/processed/**/**/**/*')), key=sequence_number)
+    # # das_data_paths = sorted(glob.glob(str(config.data_directory / 'for_OSU_processed/**/*')), key=sequence_number)
+    # # das_data_paths = [str(config.data_directory / 'processed_66/test/Processed_data_all_files.h5')]
+    # # das_data_paths = [str(config.data_directory / 'new_frf/processed/2026/10-Oct/Processed_data_all_files.h5')]
+    # # phase, _ = load_processedData(das_data_paths[0])
+    # save_path = str(config.figure_directory)
+    # waterFall(das_data_paths, save_path, channel_spacing=1.6, starttime=datetime(2026, 7, 7, 20, 0, 0), endtime=datetime(2026, 7, 7, 20, 21, 0))
 
     #TODO: look at residual spectrum - compute rmse.  function for compute residual - allow for either one x in t or one t in x.
 
     #TODO: look at spectrograms of the DAS data and the AWAC data over the entire dataset - plus directional spectra and directional spread
 
-    #TODO: would ast v puv computation of awac/model directional spectrum matter?
-
     #TODO: make a run frf DAS Plots script at the end of this
-
-    #TODO: change the name of where the model data resides to calibration_data - not calib coefficients
 
     #TODO: check that the pressure response value Kp (k and h) is the same for the calibration script and the plotting script
 
     #TODO: evaluate bulk wave statistics at 300m AWAC and DAS measurements - prove calibration is good in the cross-shore leg between the two AWACs
-
-    #TODO: check that alongshore cable end channel and alongshore cable start channel are in exactly the same place - this must be true for the calibration to be precise.
 
     #TODO: given that the DAS is buried some depth below the seabed, would we use h at the seabed for pressure response factor or the actual estimated depth + burial.
     # technically the wave apply a strain to the bed, which is then coupled to the cable - signal attenuates (likely f dependent) based on burial depth.
 
     #TODO: three channel discrepancy between fiber 1 metadata and the fiber 1 GUI screen 1595 v 1592 respectively - not an issue if the edges of the channels are clipped
 
+    #TODO: ask if we should consider the z location of the channels as just the bathymetry or the bathy + burial. Currently I am doing bathy + burial. but signal will degrade with further burial.
+    # we also only want to reproduce the pressure spectrum seen at the seafloor, not buried under the seafloor
 
-    #TODO: make sure the calibration and new das orientation match angle conventions.
+    #TODO: fix the channel index v true channel number discrepancy. ex: AWAC channel index is 330 but true channel value is
+
+    #TODO: look at signal response v cable and wave orientation. Just simple analysis
+
+

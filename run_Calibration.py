@@ -18,8 +18,8 @@ if __name__ == "__main__":
 
     all_files = sorted(glob.glob(f'{config.data_directory}/for_OSU_processed/**/*'), key=sequence_number) #list of sorted DAS files in the data folder
 
-    save_folder = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    DAS_XYZ_path = config.data_directory / 'frf_awac/channel_grid.pkl'  #FIXME: use robs new file
+    save_folder = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
+    DAS_XYZ_path = config.data_directory / 'frf_awac/new_DAS_XYZgrid.pkl'
     AWAC1_path = config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
 
     os.makedirs(save_folder, exist_ok=True)

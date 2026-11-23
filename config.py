@@ -15,13 +15,10 @@ class DASConfig():
     channel_spacing: float = 1.6 #meters
     original_sampling_frequency: float = 500.0 #Hz
     decimated_sampling_frequency: float = 2.0 #Hz
-    N_channels: int = 1592 #number of channels along the DAS
-    alongshore_channel_start: int = 501 #channel that the alongshore leg should approximately start at  #FIXME: this will need to be changed - or axed
-    alongshore_channel_end: int = 1091 #channel that the alongshore leg should approximately end at
 
     # --- AWAC PARAMETERS ---
-    awac600_channel_location: int = 402 #channel number of the AWAC 600m xFRF location along the DAS cable
-    awac300_channel_location: int = 208 #channel number of the AWAC 300m xFRF location along the DAS cable
+    awac600_channel_location: int = 330 #channel array index of the AWAC 600m xFRF location along the DAS cable
+    awac300_channel_location: int = 132 #channel array index of the AWAC 300m xFRF location along the DAS cable
 
     # --- CALIBRATION PARAMETERS ---
     burst_duration: int = 35 #minutes - duration of the data collection bursts for the AWACs
@@ -30,6 +27,7 @@ class DASConfig():
 
     # --- FRF SPECIFICS ---
     FRF_orientation: float = 71.8535 # degrees - orientation of the FRF beach to true north in wgs84
+    orientation_half_window = 2 #half window of points to slide over the DAS XYZ locations to get the local orientation of a cable. Ex: window = idx(-2, -1, 0, 1, 2)
 
     # --- FILTERING ---
     temporal_window: int = 10 #minutes - size of the temporal window used in the temporal detrend in FRF_DAS_processing.py

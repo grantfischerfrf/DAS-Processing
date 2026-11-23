@@ -142,7 +142,7 @@ def read_dasFile(file_path:str):
     return data_vars
 
 
-def inspect_metadata(h5_file_path):
+def inspect_hdf5_metadata(h5_file_path):
     # This code opens an hdf5 file and lists out its contents
     # f.visititems iterates through every object in the hdf5 file recursively and applies the helper function to it
     # An object in an hdf5 file can either be a Dataset or a Group
@@ -659,6 +659,39 @@ def build_DAS_XYZ_grid():
     plt.close('all')
 
 
+def get_channel_orientation(das_grid, half_window=2):
+
+    '''get the orientation of the channels relative to shore normal - 71.8535 degrees relative to true North'''
+    xs = das_grid['xs'] #all x coords
+    ys = das_grid['ys'] # all y coords
+    n = len(xs) # number of channels
+
+    orientation = np.zeros(n) #initialize orientation array
+    for ind in range(n): #loop through channel locations and indices
+        if ind - half_window < 0:  #use a one-sided window if the low index is near the end of the cable
+            low = 0
+            high = 0 + (2 * half_window)
+        elif ind + half_window > n-1: #use a one-sided window if the high index is near the end of the cable
+            low = n-1 - (2 * half_window)
+            high = n-1
+        else:  #use half window centered on the index otherwise
+            low = ind - half_window #low index of the window
+            high = ind + half_window # high index of the window
+
+        pts = np.column_stack([xs[low:high + 1], ys[low:high + 1]]) #get the points in the window
+        pts = pts - pts.mean(axis=0) #center the points around the mean - shape: (half_window, 2)
+
+        _, _, vt = np.linalg.svd(pts, full_matrices=False) #given a point cloud (pts), find the axes of the cloud.
+        vx, vy = vt[0] #vt[0] is the direction along which the cloud is the longest (highest variance). This is the direction of the cable in the window. vx, vy are the x and y component vectors.
+        #the line through the centroid along vt[0] minimizes the sum of squared perpendicular distances from the points to the line.
+        #returns of s[0] and s[1] can be used to find window size. S[1] / S[0] will be near zero for a straight line. S is proportional to how spread out the points are along the axes.
+
+        orientation_deg = np.degrees(np.arctan2(vy, vx)) #orientation in degrees - relative to shore normal. Positive orientation CCW from zero, negative CW from zero. To swap, add a '-' to vy
+        orientation_wrapped = (orientation_deg + 90) % 180 - 90
+        orientation[ind] = orientation_wrapped
+    return orientation
+
+
 def read_mat(mat_path):
     '''Recursively print the contents of a .mat file, including nested structures and lists.
     This would likely work for more file types than just .mat - based on the hdf5 and json recursive readers,
@@ -758,14 +791,14 @@ if __name__ == "__main__":
     #     print_all_attributes(raw_file, f)
     #     # Then, recursively visit all objects inside the file
     #     f.visititems(print_all_attributes)
-    #
-    # #average frequency dependent calibration coefficient over all data bursts
-    # save_dir = config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted'
-    # data_dir = config.data_directory / 'frf_awac/calibration_coefficients_burst_600_weighted'
-    # # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
-    # average_C_f_over_day(data_dir, save_dir)
+
+    #average frequency dependent calibration coefficient over all data bursts
+    save_dir = config.data_directory / 'frf_awac/freq_dependent_calib_coeff_weighted'
+    data_dir = config.data_directory / 'frf_awac/calibration_data_burst_600_weighted'
+    # c_all = average_C_f_over_all_bursts(data_dir, save_dir)
+    average_C_f_over_day(data_dir, save_dir)
 
     #inspect metadata
     # das_file_path = config.data_directory / 'processed_66/test/decimator_2026-06-06_14.00.01_UTC_011457.h5'
-    # inspect_metadata(das_file_path)
+    # inspect_hdf5_metadata(das_file_path)
 

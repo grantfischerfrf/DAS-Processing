@@ -28,8 +28,8 @@ def plot_timeSeries(data, channel:int):
     plt.close('all')
 
 
-def process_worker(i, all_files, savefolder, gauge_length=1.6, sampling_frequency=500, temporal_window=10,
-                   downsample=False, low_cutoff_frequency=1, high_cutoff_frequency=0.05, downsample_frequency=2, multi_save=True):
+def process_worker(i, all_files, savefolder, gauge_length=1.6, sampling_frequency=None, temporal_window=10,
+                   downsample=False, low_cutoff_frequency=None, high_cutoff_frequency=None, downsample_frequency=None, multi_save=True):
 
     processor = None
 
@@ -114,7 +114,7 @@ class DASProcessor:
         self.time_ds = None  # time_dataset, will hold the resizable time dataset once initialized
         self.f = None
 
-    def process_file(self, rawData, unix_time, start_clip, stop_clip, downsample=True, low_cutoff_frequency=1, high_cutoff_frequency=0.05, downsample_frequency=2, multi_save=True):
+    def process_file(self, rawData, unix_time, start_clip, stop_clip, downsample=True, low_cutoff_frequency=None, high_cutoff_frequency=None, downsample_frequency=2, multi_save=True):
 
         #antialiasing check - make sure the cutoff frequency is less than half the downsample frequency to avoid aliasing
         # assert cutoff_frequency < 0.5 * downsample_frequency, "Cutoff frequency must be less than half the downsample frequency to avoid aliasing."  #FIXME: uncomment me
@@ -133,13 +133,12 @@ class DASProcessor:
 
         if not multi_save:  #if saving one large file, initialize the hdf5 file only once if it does not already exist
             if self.strain_ds is None:
-                self.f = h5py.File(self.save_path + 'all_files' + '.h5', "w") # open (create/overwrite) the output HDF5 file for incremental writing
+                self.f = h5py.File(self.save_path + 'Processed_data_all_files' + '.h5', "w") # open (create/overwrite) the output HDF5 file for incremental writing
                 self._init_h5(n_channels)
 
-        # strain_temporal_detrend = self.temporal_detrend(rawData)  # temporal detrend with a 10-minute moving window (in each isolated channel)
-        strain_temporal_detrend = self.high_pass_filter(rawData, cutoff_frequency=high_cutoff_frequency) #detrend with a high pass filter -
+        signal = self.temporal_detrend(rawData)  # temporal detrend with a 10-minute boxcar moving window (in each isolated channel)
 
-        strain_common_mode_removed = self.common_mode_removal(strain_temporal_detrend)  # common - mode removal (spatial detrend)
+        strain_common_mode_removed = self.common_mode_removal(signal)  # common - mode removal (spatial detrend)
 
         if downsample:
             #lowpass filter the data
@@ -190,15 +189,15 @@ class DASProcessor:
 
         # 3: low pass filter to remove high frequency noise
         # make sure to low pass filter at least close to the nyquist frequency, there is likely almost no energy between 1 - ~5Hz that could alias
-        b, a = butter(butter_order, cutoff_frequency, btype='lowpass', fs=self.sampling_frequency, analog=False, output='ba') #returns numerator and denominator coefficients of the filter transfer function
+        # b, a = butter(butter_order, cutoff_frequency, btype='lowpass', fs=self.sampling_frequency, analog=False, output='ba') #returns numerator and denominator coefficients of the filter transfer function
         # print(len(output))
         # b, a = output[0], output[1] #unpack output
 
-        filtered_strain = filtfilt(b, a, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
+        # filtered_strain = filtfilt(b, a, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
 
         #newer filtering scheme is to use sosfiltfilt for all iir filtering as it is stable for higher order filters and can handle lower order filters - difference between the two is negligible for low order filters
-        # sos = butter(butter_order, cutoff_frequency, btype='lowpass', fs=self.sampling_frequency, analog=False, output='sos') #returns second-order sections representation of the filter
-        # filtered_strain = sosfiltfilt(sos, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
+        sos = butter(butter_order, cutoff_frequency, btype='lowpass', fs=self.sampling_frequency, analog=False, output='sos') #returns second-order sections representation of the filter
+        filtered_strain = sosfiltfilt(sos, strain_common_mode_removed, axis=0)  # apply filter along the time axis - zero phase filtering, nothing is shifted in time
 
         return filtered_strain
 
@@ -266,8 +265,10 @@ class DASProcessor:
 
 if __name__ == "__main__":
 
-    datafolder = os.getcwd() + '/data/new_frf/decimated/2026/10-Oct/20261020'
-    savefolder = os.getcwd() + '/data/new_frf/processed/2026/10-Oct/20261020/'
+    #debug section
+
+    datafolder = os.getcwd() + '/data/raw_66/1400_UTC'
+    savefolder = os.getcwd() + '/data/processed_66/test/'
 
     #define gauge length and sampling frequency
     gauge_length = 1.6 #meters
@@ -284,7 +285,7 @@ if __name__ == "__main__":
         gauge_length=gauge_length,
         sampling_frequency=sampling_frequency,
         temporal_window=temporal_window,
-        save_path=os.path.join(savefolder, 'Processed_data_')
+        save_path=savefolder
     )
 
     for i in tqdm(range(1, len(all_files) - 1)):  #start from index one to get current previous and next file
@@ -313,8 +314,16 @@ if __name__ == "__main__":
         start_clip = previous_file['RawData'].shape[0] #indices where to start and stop a clip to get rid of the buffers
         stop_clip = start_clip + n
 
+        # Release memory as soon as possible
+        del previous_file
+        del current_file
+        del next_file
+
         #process raw strain data
-        processor.process_file(rawData, time, start_clip, stop_clip, downsample=False, cutoff_frequency=5, downsample_frequency=2, multi_save=False)
+        processor.process_file(rawData, time, start_clip, stop_clip, downsample=True, low_cutoff_frequency=1, high_cutoff_frequency=0.05, downsample_frequency=2, multi_save=True)
+
+        del rawData
+        del time
 
     processor.close()
 

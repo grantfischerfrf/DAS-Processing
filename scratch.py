@@ -7,7 +7,7 @@ import xarray as xr
 import os
 import glob
 from utils import sequence_number, time2dateTime, strain2phase, load_processedData, get_DAS_PSD, get_DAS_PSD_burst, compute_bulk_statistics, integrate_spectrum, smooth_1D_spectrum, \
-    read_mat
+    read_mat, read_Json
 import re
 from FRF_DAS_plots import waterFall
 from scipy.signal import welch
@@ -1304,21 +1304,23 @@ def build_DAS_grid(mat_path, save_path):
 # })
 #
 # #clip dataframe to desired date range
-# start_time = datetime(2026, 6, 1, 0, 0, 0)
-# end_time = datetime(2026, 6, 15, 0, 0, 0)
+# start_time = datetime(2026, 7, 6, 0, 0, 0)
+# end_time = datetime(2026, 7, 8, 0, 0, 0)
+#
+# # print(df['Time'])
 #
 # df_clipped = df[(df['Time'] > start_time) & (df['Time'] < end_time)]
 #
 # #plot
 # fig, axes = plt.subplots(2, 1, figsize=(15, 10))
 #
-# axes[0].scatter(df_clipped['Time'], df_clipped['Hs'], s=3, color='red')
+# axes[0].plot(df_clipped['Time'], df_clipped['Hs'], color='red')
 # axes[0].set_xlabel('Time')
 # axes[0].set_ylabel('Wave Height (m)')
 # axes[0].set_title('Significant Wave Height Over Time')
 # axes[0].grid()
 #
-# axes[1].scatter(df_clipped['Time'], df_clipped['Peak Direction'], s=3, color='blue')
+# axes[1].plot(df_clipped['Time'], df_clipped['Peak Direction'], color='blue')
 # axes[1].axhline(71.8538, color='black', linestyle='--', label='xFRF shore normal')
 # axes[1].set_xlabel('Time')
 # axes[1].set_ylabel('Direction (degrees CW relative to true north)')
@@ -1327,14 +1329,14 @@ def build_DAS_grid(mat_path, save_path):
 # # axes[1].set_ylim(71.8538 - 90, 71.8535 + 90)  #east coast beach
 # axes[1].legend(loc='upper left')
 #
-# fig.suptitle('CDIP 433 - Duck FRF 17m Buoy: Wave Information 06/01/2026 - 06/14/2026', fontsize=16, fontweight='bold')
+# fig.suptitle(f'CDIP 433 - Duck FRF 17m Buoy: Wave Information {start_time.strftime("%Y-%m-%d_%H_%M_%S")}_to_{end_time.strftime("%Y-%m-%d_%H_%M_%S")}', fontsize=16, fontweight='bold')
 #
 # plt.tight_layout()
-# plt.savefig('./figures/waveInformation.png')
+# plt.savefig(f'./figures/waveInformation_{start_time.strftime("%Y-%m-%d_%H_%M_%S")}_to_{end_time.strftime("%Y-%m-%d_%H_%M_%S")}.png')
 # plt.show()
 # plt.close('all')
 
-# '''WIND'''
+'''WIND'''
 # wind_path = './data/windData.txt'
 # wind_data = pd.read_csv(wind_path, sep=r'\s+', skiprows=[1])
 # wind_data["Time"] = pd.to_datetime(
@@ -1375,7 +1377,7 @@ def build_DAS_grid(mat_path, save_path):
 # fig.suptitle('NDBC Station DUKN7 - 8651370 - Duck Pier, NC: Wind Information', fontsize=16, fontweight='bold')
 #
 # plt.tight_layout()
-# plt.savefig('./figures/windInformation.png')
+# plt.savefig(f'./figures/windInformation_{start_time.strftime("%Y-%m-%d_%H_%M_%S")}_to_{end_time.strftime("%Y-%m-%d_%H_%M_%S")}.png')
 # plt.show()
 # plt.close('all')
 
@@ -1741,7 +1743,7 @@ def build_DAS_grid(mat_path, save_path):
 
 '''IDEALIZED DAS CABLE GRID'''
 
-#
+# #
 # #offshore LARC survey
 # #DAS survey locations
 # offshore_survey_path = './DAS_deploy/Alex_FiberLay_20250730.csv'
@@ -1873,6 +1875,9 @@ def build_DAS_grid(mat_path, save_path):
 # interp_z_alongshore = interp1d(ys[sort_idx_y], zs[sort_idx_y],
 #                                 bounds_error=False, fill_value='extrapolate')
 # channel_z[alongshore_mask] = interp_z_alongshore(channel_y[alongshore_mask])  #given a yFRF value what is the seafloor elevation here - alongshore only
+#
+# print(min(channel_z))
+# print(max(channel_z))
 #
 # channel_grid = pd.DataFrame({
 #     'channel': channel_number,
@@ -2659,34 +2664,40 @@ def build_DAS_grid(mat_path, save_path):
 
 
 '''FIND EXACT CHANNEL LOCATION OF THE AWACS'''
-# channel_grid_path = './data/frf_awac/channel_grid.pkl'
-# channel_grid = np.load(channel_grid_path, allow_pickle=True)
-# xs = channel_grid['xFRF']
-# zs = channel_grid['z']
-#
-# file_paths = {
-#     300: './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc',
-#     600: './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
-# }
-#
-# results = {}
-#
-# for awac, file_path in file_paths.items():
-#
-#     data = xr.open_dataset(file_path)
-#     long = data['longitude'].values
-#     lat = data['latitude'].values
-#     #convert lat lon to FRFlocal
-#     dict = FRFcoord(long, lat, coordType='LL')
-#     xfrf = dict['xFRF'] #x coordinate of awac location
-#
-#     #find where awac x coordinate aligns with the channel_grid
-#     channel = np.argmin(np.abs(xfrf - xs))
-#
-#     results[awac] = channel
-#
-# print(f'Channel for 300m xFRF AWAC: {results[300]}')  #208
-# print(f'Channel for 600m xFRF AWAC: {results[600]}')  #402
+channel_grid_path = './data/frf_awac/new_DAS_XYZgrid.pkl'
+channel_grid = np.load(channel_grid_path, allow_pickle=True)
+xs = channel_grid['xs']
+zs = channel_grid['zs']
+chnls = channel_grid['chnls']
+
+file_paths = {
+    300: './data/frf_awac/FRF-ocean_waves_sig940-300_202606.nc',
+    600: './data/frf_awac/FRF-ocean_waves_sig940-600_202606.nc'
+}
+
+results = {}
+
+for awac, file_path in file_paths.items():
+
+    data = xr.open_dataset(file_path)
+    long = data['longitude'].values
+    lat = data['latitude'].values
+    #convert lat lon to FRFlocal
+    dict = FRFcoord(long, lat, coordType='LL')
+    xfrf = dict['xFRF'] #x coordinate of awac location
+
+    #find where awac x coordinate aligns with the channel_grid
+    channel_idx = np.argmin(np.abs(xfrf - xs))
+
+    channel = chnls[channel_idx] #pull the true channel value
+    # print(channel_idx)
+
+    results[awac] = channel
+
+
+
+print(f'Channel for 300m xFRF AWAC: {results[300]}')  #208 - old, 132 - new (238 is true channel)
+print(f'Channel for 600m xFRF AWAC: {results[600]}')  #402 - old, 330 - new (436 is true channel)
 
 
 '''ENERGY FLUX CONSERVATION CHECK ACROSS CHANNELS'''
@@ -3342,179 +3353,196 @@ def build_DAS_grid(mat_path, save_path):
 '''ROBS GEOLOCATED DAS FILE + ARGUS IMAGE'''
 # config = DASConfig()
 
+# mat_path = config.data_directory / 'frf_awac/DAS2026BestChannelPositionsAsOf091826UseMe.mat'
+# read_mat(mat_path) #recursively print everything in the mat file
+#
+# mat_data = scipy.io.loadmat(str(mat_path), struct_as_record=False, squeeze_me=True)['DAS']
+#
+# #emsemble averaged DAS locations - many trials of geolocation averaged into one location (identical copies of a system - tested - and results averaged into a mean)
+# # x1, y1 are the out legs, x2, y2 are the return legs
+# # Chnls - are the corresponding das channels to the x/y locations
+# #  xRaw, yRaw, sigXRaw, sigYRaw are unsmoothed estimates of the x, y locations of channels
+# # Ngood is the number of valid ensembles for each x, y - NgoodRaw is the unsmoothed estimates
+# # z is the estimated depth location of the DAS cable - from the last CRAB survey?
+# #  MidPoint is the cable end turning point channel (splicing location).
+# # TimesUsedHr1 are datenums of each run for first ensemble.
+# # HrOffSets are the offsets from Hour1 time for ensembles.
+# # BaseFilename is the root filename of intersection data.
+# # Vertical bathy and burial as of last CRAB survey "burialEndDate",  includes likely cable depth "zCable" and bathy "zBathy" as  well as burial depth "burial".  These are saved for the full
+# # cable as well as for each of the four legs under the assumption that the cable will sink to the bottom of the profile envelope.
+#
+# x1_leg, x2_leg = mat_data.x1, mat_data.x2  #outward leg data
+# y1_leg, y2_leg = mat_data.y1, mat_data.y2  #return leg data
+#
+# midpoint = mat_data.midPoint  #location of cable splice/turn - channel location - looks like a gap near here - data skip
+#
+# #x1 leg data
+# x1_x = x1_leg.x #frf local x locaitons
+# x1_y = x1_leg.y #frf local y locations
+# x1_chnls = x1_leg.chnls  #channel numbers
+# x1_z = x1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+#
+# #x2 leg data
+# x2_x = x2_leg.x #frf local x locaitons
+# x2_y = x2_leg.y #frf local y locations
+# x2_chnls = x2_leg.chnls  #channel numbers
+# x2_z = x2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+#
+# #y1 leg data
+# y1_x = y1_leg.x #frf local x locaitons
+# y1_y = y1_leg.y #frf local y locations
+# y1_chnls = y1_leg.chnls  #channel numbers
+# y1_z = y1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+#
+# #y2 leg data
+# y2_x = y2_leg.x #frf local x locaitons
+# y2_y = y2_leg.y #frf local y locations
+# y2_chnls = y2_leg.chnls  #channel numbers
+# y2_z = y2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+#
+# xs = np.concatenate([x1_x, y1_x, y2_x[::-1], x2_x[::-1]]) #all x coords
+# ys = np.concatenate([x1_y, y1_y, y2_y[::-1], x2_y[::-1]]) # all y coords
+# zs = np.concatenate([x1_z, y1_z, y2_z[::-1], x2_z[::-1]]) #all z coords
+# chnls = np.concatenate([x1_chnls, y1_chnls, y2_chnls[::-1], x2_chnls[::-1]]) #all channel numbers
+# #
+# #--- ARGUS ---
+# local_image_path = config.root / 'DAS_Deploy/20250730T150000Z.FrfTower.cx.snap.jpg'
+# _, _, local_x, local_y = return_metadata(str(local_image_path))
+# extent = (float(local_x.split()[0]), float(local_x.split()[1]), float(local_y.split()[0]), float(local_y.split()[1]))
+# image = cv2.cvtColor(cv2.imread(local_image_path), cv2.COLOR_BGR2RGB)
+#
+# #--- AWACS ---
+# file_paths = {
+#     600:config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-600_202606.nc',
+#     300:config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
+# }
+#
+# results = {}
+#
+# for awac, file_path in file_paths.items():
+#
+#     data = xr.open_dataset(file_path)
+#     long = data['longitude'].values
+#     lat = data['latitude'].values
+#     #convert lat lon to FRFlocal
+#     dict = FRFcoord(long, lat, coordType='LL')
+#     xfrf = dict['xFRF'] #x coordinate of awac location
+#     yfrf = dict['yFRF'] #y coordinate of awac location
+#     results[awac] = {'xFRF': xfrf, 'yFRF': yfrf}
+#
+#
+# #---PLOT---
+# fig, axes = plt.subplots(1, 1, figsize=(8, 15))
+#
+# sc = axes.scatter(xs, ys, c=zs, cmap='viridis_r', s=3)
+# axes.scatter(results[600]['xFRF'], results[600]['yFRF'], c='b', s=150, marker='*', label='AWAC xFRF=600m')
+# axes.scatter(results[300]['xFRF'], results[300]['yFRF'], c='r', s=150, marker='*', label='AWAC xFRF=300m')
+# axes.imshow(image, extent=extent)
+# axes.set_xlabel('xFRF (m)')
+# axes.set_ylabel('yFRF (m)')
+# axes.set_xlim(0, xs.max() + 50)
+# axes.legend(loc='upper right', fontsize=10)
+#
+# cbar = plt.colorbar(sc, ax=axes)
+# cbar.set_label('Cable Depth (m)')
+#
+# plt.tight_layout()
+# plt.savefig('./figures/robs_geolocated_das_file.png')
+# plt.show()
+# plt.close('all')
+
+
+'''CABLE ORIENTATION USING ROBS DAS LOCATIONS'''
 mat_path = config.data_directory / 'frf_awac/DAS2026BestChannelPositionsAsOf091826UseMe.mat'
 # read_mat(mat_path) #recursively print everything in the mat file
 
-mat_data = scipy.io.loadmat(str(mat_path), struct_as_record=False, squeeze_me=True)['DAS']
+save_path = config.data_directory / 'frf_awac/new_DAS_XYZgrid.pkl'
 
-#emsemble averaged DAS locations - many trials of geolocation averaged into one location (identical copies of a system - tested - and results averaged into a mean)
-# x1, y1 are the out legs, x2, y2 are the return legs
-# Chnls - are the corresponding das channels to the x/y locations
-#  xRaw, yRaw, sigXRaw, sigYRaw are unsmoothed estimates of the x, y locations of channels
-# Ngood is the number of valid ensembles for each x, y - NgoodRaw is the unsmoothed estimates
-# z is the estimated depth location of the DAS cable
-#  MidPoint is the cable end turning point channel (splicing location).
-# TimesUsedHr1 are datenums of each run for first ensemble.
-# HrOffSets are the offsets from Hour1 time for ensembles.
-# BaseFilename is the root filename of intersection data.
-# Vertical bathy and burial as of last CRAB survey "burialEndDate",  includes likely cable depth "zCable" and bathy "zBathy" as  well as burial depth "burial".  These are saved for the full
-# cable as well as for each of the four legs under the assumption that the cable will sink to the bottom of the profile envelope.
+build_DAS_grid(mat_path, save_path) #build the new DAS grid
 
-x1_leg, x2_leg = mat_data.x1, mat_data.x2  #outward leg data
-y1_leg, y2_leg = mat_data.y1, mat_data.y2  #return leg data
+half_window = 2
+#load new DAS grid - determine orientation for each point
+das_grid = np.load(save_path, allow_pickle=True)
 
-midpoint = mat_data.midPoint  #location of cable splice/turn - channel location - looks like a gap near here - data skip
+a = das_grid['chnls'] #true channel numbers
+x1 = das_grid['x1_ind']
+y1 = das_grid['y1_ind']
+x2 = das_grid['x2_ind']
+y2 = das_grid['y2_ind']
+xs = das_grid['xs']
 
-#x1 leg data
-x1_x = x1_leg.x #frf local x locaitons
-x1_y = x1_leg.y #frf local y locations
-x1_chnls = x1_leg.chnls  #channel numbers
-x1_z = x1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+def get_channel_orientation(das_grid, half_window=5):
 
-#x2 leg data
-x2_x = x2_leg.x #frf local x locaitons
-x2_y = x2_leg.y #frf local y locations
-x2_chnls = x2_leg.chnls  #channel numbers
-x2_z = x2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+    '''get the orientation of the channels relative to shore normal - 71.8535 degrees relative to true North'''
+    xs = das_grid['xs'] #all x coords
+    ys = das_grid['ys'] # all y coords
+    n = len(xs) # number of channels
 
-#y1 leg data
-y1_x = y1_leg.x #frf local x locaitons
-y1_y = y1_leg.y #frf local y locations
-y1_chnls = y1_leg.chnls  #channel numbers
-y1_z = y1_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+    orientation = np.zeros(n) #initialize orientation array
+    for ind in range(n): #loop through channel locations and indices
+        if ind - half_window < 0:  #use a one-sided window if the low index is near the end of the cable
+            low = 0
+            high = 0 + (2 * half_window)
+        elif ind + half_window > n-1: #use a one-sided window if the high index is near the end of the cable
+            low = n-1 - (2 * half_window)
+            high = n-1
+        else:  #use half window centered on the index otherwise
+            low = ind - half_window #low index of the window
+            high = ind + half_window # high index of the window
 
-#y2 leg data
-y2_x = y2_leg.x #frf local x locaitons
-y2_y = y2_leg.y #frf local y locations
-y2_chnls = y2_leg.chnls  #channel numbers
-y2_z = y2_leg.zCable * -1  #convert to positive h for dispersion -- zCable = zBathy + burial depth
+        pts = np.column_stack([xs[low:high + 1], ys[low:high + 1]]) #get the points in the window
+        pts = pts - pts.mean(axis=0) #center the points around the mean - shape: (half_window, 2)
 
-xs = np.concatenate([x1_x, y1_x, y2_x[::-1], x2_x[::-1]]) #all x coords
-ys = np.concatenate([x1_y, y1_y, y2_y[::-1], x2_y[::-1]]) # all y coords
-zs = np.concatenate([x1_z, y1_z, y2_z[::-1], x2_z[::-1]]) #all z coords
-chnls = np.concatenate([x1_chnls, y1_chnls, y2_chnls[::-1], x2_chnls[::-1]]) #all channel numbers
-#
-#--- ARGUS ---
-local_image_path = config.root / 'DAS_Deploy/20250730T150000Z.FrfTower.cx.snap.jpg'
-_, _, local_x, local_y = return_metadata(str(local_image_path))
-extent = (float(local_x.split()[0]), float(local_x.split()[1]), float(local_y.split()[0]), float(local_y.split()[1]))
-image = cv2.cvtColor(cv2.imread(local_image_path), cv2.COLOR_BGR2RGB)
+        _, _, vt = np.linalg.svd(pts, full_matrices=False) #given a point cloud (pts), find the axes of the cloud.
+        vx, vy = vt[0] #vt[0] is the direction along which the cloud is the longest (highest variance). This is the direction of the cable in the window. vx, vy are the x and y component vectors.
+        #the line through the centroid along vt[0] minimizes the sum of squared perpendicular distances from the points to the line.
+        #returns of s[0] and s[1] can be used to find window size. S[1] / S[0] will be near zero for a straight line. S is proportional to how spread out the points are along the axes.
 
-#--- AWACS ---
-file_paths = {
-    600:config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-600_202606.nc',
-    300:config.data_directory / 'frf_awac/FRF-ocean_waves_sig940-300_202606.nc'
-}
+        orientation_deg = np.degrees(np.arctan2(vy, vx)) #orientation in degrees - relative to shore normal. Positive orientation CCW from zero, negative CW from zero. To swap, add a '-' to vy
 
-results = {}
+        orientation_wrapped = (orientation_deg + 90) % 180 - 90
+        orientation[ind] = orientation_wrapped
 
-for awac, file_path in file_paths.items():
+    return orientation
 
-    data = xr.open_dataset(file_path)
-    long = data['longitude'].values
-    lat = data['latitude'].values
-    #convert lat lon to FRFlocal
-    dict = FRFcoord(long, lat, coordType='LL')
-    xfrf = dict['xFRF'] #x coordinate of awac location
-    yfrf = dict['yFRF'] #y coordinate of awac location
-    results[awac] = {'xFRF': xfrf, 'yFRF': yfrf}
+orientation = get_channel_orientation(das_grid, half_window)
+# orientation = np.abs(orientation) #- config.FRF_orientation
+#plot the orientation of the cable
+fig = plt.figure(figsize=(8, 8))
 
-
-#---PLOT---
-fig, axes = plt.subplots(1, 1, figsize=(8, 15))
-
-sc = axes.scatter(xs, ys, c=zs, cmap='viridis_r', s=3)
-axes.scatter(results[600]['xFRF'], results[600]['yFRF'], c='b', s=150, marker='*', label='AWAC xFRF=600m')
-axes.scatter(results[300]['xFRF'], results[300]['yFRF'], c='r', s=150, marker='*', label='AWAC xFRF=300m')
-axes.imshow(image, extent=extent)
+axes = fig.add_subplot(1, 1, 1)
+sc = axes.scatter(das_grid['xs'], das_grid['ys'], c=orientation, cmap='bwr', vmin=-90, vmax=90, s=3)
+# axes.set_ylim(600, 1200)
+# axes.set_xlim(0, 850)
+axes.set_aspect('equal')
+axes.set_facecolor('grey')
 axes.set_xlabel('xFRF (m)')
 axes.set_ylabel('yFRF (m)')
-axes.set_xlim(0, xs.max() + 50)
-axes.legend(loc='upper right', fontsize=10)
+axes.set_title('DAS channel orientation relative to shore normal')
 
-cbar = plt.colorbar(sc, ax=axes)
-cbar.set_label('Cable Depth (m)')
+# axes1 = fig.add_subplot(2, 1, 2, polar=True)  #COLORWHEEL - SAVE FOR LATER USE
+# r = np.linspace(0.3, 1, 100)          # Controls inner radius (donut hole) and outer limit
+# theta = np.linspace(0, 2 * np.pi, 200)  # full 360 degrees rotation
+# R, Theta = np.meshgrid(r, theta)
+# mesh = axes1.pcolormesh(Theta, R, Theta, cmap='hsv', shading='auto') #colorwheel
+#
+# axes1.set_yticklabels([])  # Hide radial ticks
+# axes1.grid(False)          # Turn off gridlines
+# axes1.spines['polar'].set_visible(False)  # Remove the outer border ring
+
+divider = make_axes_locatable(axes)
+cax = divider.append_axes("right", size="5%", pad=0.1)
+fig.colorbar(sc, cax=cax, label='Cable Orientation from Shore Normal (deg)')
 
 plt.tight_layout()
-plt.savefig('./figures/robs_geolocated_das_file.png')
+plt.savefig(config.figure_directory / 'DAS_cable_orientation.png')
 plt.show()
 plt.close('all')
 
 
-'''CABLE ORIENTATION USING ROBS DAS LOCATIONS'''
-# mat_path = config.data_directory / 'frf_awac/DAS2026BestChannelPositionsAsOf091826UseMe.mat'
-# # read_mat(mat_path) #recursively print everything in the mat file
+'''FRF v PacWAVE JSON, DAS CHECK FOR CHRIS' WORK'''
+# frf_json = config.documentation_directory / 'chris_json/FRF26_OSU_decimator_test.json'  #optical setup jsons
+# pacWave_json = config.documentation_directory / 'chris_json/pacwave26_match.json'
+# test_json = config.documentation_directory / 'ONYX-0564 Fiber 1__SimpleLinearAssetChainFiber1_V2_v50_engineeringChain.json'  #engineering chain json
 #
-# save_path = config.data_directory / 'frf_awac/new_DAS_XYZgrid.pkl'
-#
-# build_DAS_grid(mat_path, save_path) #build the new DAS grid
-#
-# half_window = 2
-# #load new DAS grid - determine orientation for each point
-# das_grid = np.load(save_path, allow_pickle=True)
-#
-# def get_channel_orientation(das_grid, half_window=5):
-#
-#     '''get the orientation of the channels relative to shore normal - 71.8535 degrees relative to true North'''
-#     xs = das_grid['xs'] #all x coords
-#     ys = das_grid['ys'] # all y coords
-#     n = len(xs) # number of channels
-#
-#     orientation = np.zeros(n) #initialize orientation array
-#     for ind in range(n): #loop through channel locations and indices
-#         low = max(ind - half_window, 0) #low index of the window
-#         high = min(ind + half_window, len(xs) - 1) # high index of the window
-#
-#         pts = np.column_stack([xs[low:high + 1], ys[low:high + 1]]) #get the points in the window
-#         pts = pts - pts.mean(axis=0) #center the points around the mean - shape: (half_window, 2)
-#
-#         _, _, vt = np.linalg.svd(pts, full_matrices=False) #given a point cloud (pts), find the axes of the cloud.
-#         vx, vy = vt[0] #vt[0] is the direction along which the cloud is the longest (highest variance). This is the direction of the cable in the window. vx, vy are the x and y component vectors.
-#         #the line through the centroid along vt[0] minimizes the sum of squared perpendicular distances from the points to the line.
-#         #returns of s[0] and s[1] can be used to find window size. S[1] / S[0] will be near zero for a straight line. S is proportional to how spread out the points are along the axes.
-#
-#         orientation_deg = np.degrees(np.arctan2(-vy, vx)) #orientation in degrees - relative to shore normal  #TODO: wrap this between 0 - 90 - the actual direction is not important just relative angle to shore normal
-#         orientation_wrapped = (orientation_deg + 90) % 180 - 90
-#         orientation[ind] = orientation_wrapped
-#     return orientation
-#
-# orientation = get_channel_orientation(das_grid, half_window)
-# # orientation = np.abs(orientation) #- config.FRF_orientation
-# #plot the orientation of the cable
-# fig = plt.figure(figsize=(8, 8))
-#
-# axes = fig.add_subplot(1, 1, 1)
-# sc = axes.scatter(das_grid['xs'], das_grid['ys'], c=orientation, cmap='bwr_r', vmin=-90, vmax=90, s=3)
-# # axes.set_ylim(600, 1200)
-# # axes.set_xlim(0, 850)
-# axes.set_aspect('equal')
-# axes.set_facecolor('grey')
-# axes.set_xlabel('xFRF (m)')
-# axes.set_ylabel('yFRF (m)')
-# axes.set_title('DAS channel orientation relative to shore normal')
-#
-# # axes1 = fig.add_subplot(2, 1, 2, polar=True)  #COLORWHEEL - SAVE FOR LATER USE
-# # r = np.linspace(0.3, 1, 100)          # Controls inner radius (donut hole) and outer limit
-# # theta = np.linspace(0, 2 * np.pi, 200)  # full 360 degrees rotation
-# # R, Theta = np.meshgrid(r, theta)
-# # mesh = axes1.pcolormesh(Theta, R, Theta, cmap='hsv', shading='auto') #colorwheel
-# #
-# # axes1.set_yticklabels([])  # Hide radial ticks
-# # axes1.grid(False)          # Turn off gridlines
-# # axes1.spines['polar'].set_visible(False)  # Remove the outer border ring
-#
-# divider = make_axes_locatable(axes)
-# cax = divider.append_axes("right", size="5%", pad=0.1)
-# fig.colorbar(sc, cax=cax, label='Cable Orientation from Shore Normal (deg)')
-#
-# plt.tight_layout()
-# plt.savefig(config.figure_directory / 'DAS_cable_orientation.png')
-# plt.show()
-# plt.close('all')
-#
-# # [das_grid['x1_ind']]
-
-#TODO: if an x location in the half window is greater than x1_x[-1], use a one sided window, Once the desired point is greater than x1_x[-1], go back to using a centered half window
-# for edges use a one sided window until there is enough points for a half window
-
-
+# read_Json(frf_json)
